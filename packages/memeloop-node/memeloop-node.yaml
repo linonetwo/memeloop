@@ -1,0 +1,8 @@
+auth:
+  lanPinState:
+    failCount: 0
+    nextAllowedAt: 0
+  ws:
+    enabled: true
+    mode: lan-pin
+    pin: '888888'

@@ -1,0 +1,27 @@
+import type {
+  AgentDefinition,
+  AttachmentRef,
+  ChatMessage,
+  ConversationMeta,
+  AgentInstanceMeta,
+} from "@memeloop/protocol";
+
+import type { ConversationQueryMode, GetMessagesOptions, ListConversationsOptions } from "../types.js";
+
+export interface IAgentStorage {
+  listConversations(options?: ListConversationsOptions): Promise<ConversationMeta[]>;
+  getMessages(conversationId: string, options?: GetMessagesOptions): Promise<ChatMessage[]>;
+  appendMessage(message: ChatMessage): Promise<void>;
+  upsertConversationMetadata(meta: ConversationMeta): Promise<void>;
+  insertMessagesIfAbsent(messages: ChatMessage[]): Promise<void>;
+  getAttachment(contentHash: string): Promise<AttachmentRef | null>;
+  saveAttachment(ref: AttachmentRef, data: Buffer | Uint8Array): Promise<void>;
+  readAttachmentData?(contentHash: string): Promise<Uint8Array | null>;
+  getAgentDefinition(id: string): Promise<AgentDefinition | null>;
+  getMaxLamportClockForConversation?(conversationId: string): Promise<number>;
+  saveAgentInstance(meta: AgentInstanceMeta): Promise<void>;
+  getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
+}
+
+export type { ConversationQueryMode, GetMessagesOptions, ListConversationsOptions };
+

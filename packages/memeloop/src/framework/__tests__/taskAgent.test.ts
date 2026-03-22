@@ -1,0 +1,215 @@
+import { describe, expect, it, vi, type MockedFunction } from "vitest";
+
+import type {
+  AgentFrameworkContext,
+  GetMessagesOptions,
+  IAgentStorage,
+  IChatSyncAdapter,
+  ILLMProvider,
+  INetworkService,
+  IToolRegistry,
+} from "../../types.js";
+import { createTaskAgent } from "../taskAgent.js";
+
+describe("createTaskAgent", () => {
+  function createMockContext(chunks: unknown[] = []) {
+    const storage: IAgentStorage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      appendMessage: vi.fn().mockResolvedValue(undefined),
+      upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockResolvedValue(null),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockResolvedValue(null),
+    };
+
+    const llmProvider: ILLMProvider = {
+      name: "mock",
+      async *chat(_request: unknown) {
+        for (const c of chunks) {
+          yield c;
+        }
+      },
+    };
+
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn(),
+      listTools: vi.fn().mockReturnValue([]),
+    };
+
+    const syncAdapters: IChatSyncAdapter[] = [];
+    const network: INetworkService = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const context: AgentFrameworkContext = {
+      storage,
+      llmProvider,
+      tools,
+      syncAdapters,
+      network,
+    };
+
+    return { context, storage };
+  }
+
+  it("appends user message and streams llm output as steps", async () => {
+    const chunks = ["hello", " ", "world"];
+    const { context, storage } = createMockContext(chunks);
+    const agent = createTaskAgent(context);
+
+    const steps = [];
+    for await (const step of agent({ conversationId: "c1", message: "hi" })) {
+      steps.push(step);
+    }
+
+    // 第一步是 thinking
+    expect(steps[0].type).toBe("thinking");
+    expect(steps[0].data).toMatchObject({ status: "calling-llm", conversationId: "c1" });
+
+    // 后续是 message 步
+    const messageSteps = steps.slice(1);
+    expect(messageSteps.map(s => s.data)).toEqual(chunks);
+
+    // 用户消息 + 无工具时最终 assistant 落库
+    expect(storage.appendMessage).toHaveBeenCalledTimes(2);
+    const first = (storage.appendMessage as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(first.conversationId).toBe("c1");
+    expect(first.role).toBe("user");
+    expect(first.content).toBe("hi");
+
+    // lamport / 构建历史会多次读取消息
+    expect(storage.getMessages).toHaveBeenCalledWith("c1", { mode: "full-content" } as GetMessagesOptions);
+    expect((storage.getMessages as MockedFunction<IAgentStorage["getMessages"]>).mock.calls.length).toBeGreaterThanOrEqual(
+      2,
+    );
+  });
+
+  it("runs tool loop: executes registry tool then second LLM round", async () => {
+    let round = 0;
+    const llmProvider: ILLMProvider = {
+      name: "mock",
+      async *chat() {
+        round += 1;
+        if (round === 1) {
+          yield '<tool_use name="echo">{"text":"hi"}</tool_use>';
+        } else {
+          yield "final-answer";
+        }
+      },
+    };
+
+    const messageLog: import("@memeloop/protocol").ChatMessage[] = [];
+    const storage: IAgentStorage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockImplementation(async () => [...messageLog]),
+      appendMessage: vi.fn().mockImplementation(async (m) => {
+        messageLog.push(m);
+      }),
+      upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockResolvedValue(null),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockResolvedValue(null),
+    };
+
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn().mockImplementation((id: string) => {
+        if (id === "echo") {
+          return async (args: Record<string, unknown>) => ({ result: `echo:${args.text}` });
+        }
+        return undefined;
+      }),
+      listTools: vi.fn().mockReturnValue(["echo"]),
+    };
+
+    const context: AgentFrameworkContext = {
+      storage,
+      llmProvider,
+      tools,
+      syncAdapters: [],
+      network: {
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+      },
+      taskAgent: { maxIterations: 8 },
+    };
+
+    const agent = createTaskAgent(context);
+    const steps = [];
+    for await (const step of agent({ conversationId: "def:abc", message: "user1" })) {
+      steps.push(step);
+    }
+
+    const toolSteps = steps.filter((s) => s.type === "tool");
+    expect(toolSteps.length).toBe(1);
+    expect(toolSteps[0].data).toMatchObject({ toolId: "echo" });
+
+    const appended = (storage.appendMessage as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: unknown[]) => c[0],
+    );
+    const roles = appended.map((m) => (m as import("@memeloop/protocol").ChatMessage).role);
+    expect(roles).toContain("user");
+    expect(roles).toContain("assistant");
+    expect(roles).toContain("tool");
+    expect(round).toBe(2);
+  });
+
+  it("handles LLM provider that returns a Promise resolving to an AsyncIterable (streaming)", async () => {
+    const messageLog: import("@memeloop/protocol").ChatMessage[] = [];
+    const llmProvider: ILLMProvider = {
+      name: "stream-promise",
+      chat() {
+        async function* gen() {
+          yield "a";
+          yield "b";
+        }
+        return Promise.resolve(gen());
+      },
+    };
+    const storage: IAgentStorage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockImplementation(async () => [...messageLog]),
+      appendMessage: vi.fn().mockImplementation(async (m) => {
+        messageLog.push(m);
+      }),
+      upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockResolvedValue(null),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockResolvedValue(null),
+    };
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn(),
+      listTools: vi.fn().mockReturnValue([]),
+    };
+    const context: AgentFrameworkContext = {
+      storage,
+      llmProvider,
+      tools,
+      syncAdapters: [],
+      network: { start: vi.fn().mockResolvedValue(undefined), stop: vi.fn().mockResolvedValue(undefined) },
+      taskAgent: { maxIterations: 4 },
+    };
+    const agent = createTaskAgent(context);
+    const steps = [];
+    for await (const step of agent({ conversationId: "c-stream", message: "hi" })) {
+      steps.push(step);
+    }
+    const messageSteps = steps.filter((s) => s.type === "message");
+    expect(messageSteps.map((s) => s.data)).toEqual(["a", "b"]);
+    expect(storage.appendMessage).toHaveBeenCalled();
+  });
+});
+
