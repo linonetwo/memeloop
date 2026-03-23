@@ -1,29 +1,43 @@
+import type { ImChannelBindingRecord } from "../types.js";
+
 import type { ImInboundMessage, ImAgentDriver, IIMAdapter } from "./interface.js";
 
-export interface ImChannelBindingRecord {
-  channelId: string;
-  imUserId: string;
-  activeConversationId: string;
-  defaultDefinitionId?: string;
-}
+export type { ImChannelBindingRecord };
 
 /**
- * 管理 IM 用户与会话的绑定；当前为内存实现（节点进程内）。
- * 后续可换为 SQLite 持久化。
+ * 管理 IM 用户与会话的绑定；可选 `storage` 使用 IAgentStorage 的 IM 绑定持久化。
  */
 export class IMChannelManager {
   private readonly bindings = new Map<string, ImChannelBindingRecord>();
+
+  constructor(
+    private readonly storage?: {
+      getImBinding?(c: string, u: string): Promise<ImChannelBindingRecord | null>;
+      setImBinding?(r: ImChannelBindingRecord): Promise<void>;
+    },
+  ) {}
 
   private key(channelId: string, imUserId: string): string {
     return `${channelId}::${imUserId}`;
   }
 
-  getBinding(channelId: string, imUserId: string): ImChannelBindingRecord | undefined {
-    return this.bindings.get(this.key(channelId, imUserId));
+  async getBinding(channelId: string, imUserId: string): Promise<ImChannelBindingRecord | undefined> {
+    const k = this.key(channelId, imUserId);
+    if (this.storage?.getImBinding) {
+      const row = await this.storage.getImBinding(channelId, imUserId);
+      if (row) {
+        this.bindings.set(k, row);
+        return row;
+      }
+    }
+    return this.bindings.get(k);
   }
 
-  setBinding(record: ImChannelBindingRecord): void {
+  async setBinding(record: ImChannelBindingRecord): Promise<void> {
     this.bindings.set(this.key(record.channelId, record.imUserId), record);
+    if (this.storage?.setImBinding) {
+      await this.storage.setImBinding(record);
+    }
   }
 
   /**
@@ -34,7 +48,7 @@ export class IMChannelManager {
     driver: ImAgentDriver,
     options: { defaultDefinitionId: string },
   ): Promise<{ conversationId: string }> {
-    const existing = this.getBinding(msg.channelId, msg.imUserId);
+    const existing = await this.getBinding(msg.channelId, msg.imUserId);
     if (existing) {
       await driver.sendMessage({
         conversationId: existing.activeConversationId,
@@ -47,7 +61,7 @@ export class IMChannelManager {
       definitionId: defId,
       initialMessage: msg.text,
     });
-    this.setBinding({
+    await this.setBinding({
       channelId: msg.channelId,
       imUserId: msg.imUserId,
       activeConversationId: conversationId,
@@ -56,12 +70,12 @@ export class IMChannelManager {
     return { conversationId };
   }
 
-  switchConversation(channelId: string, imUserId: string, conversationId: string): void {
-    const cur = this.getBinding(channelId, imUserId);
+  async switchConversation(channelId: string, imUserId: string, conversationId: string): Promise<void> {
+    const cur = await this.getBinding(channelId, imUserId);
     if (cur) {
-      this.setBinding({ ...cur, activeConversationId: conversationId });
+      await this.setBinding({ ...cur, activeConversationId: conversationId });
     } else {
-      this.setBinding({
+      await this.setBinding({
         channelId,
         imUserId,
         activeConversationId: conversationId,

@@ -2,7 +2,10 @@
  * Platform-agnostic prompt editor core: schema, uiSchema, conditional field, array context.
  */
 
-export { getSchemaFromDefinition } from "./schemaGenerator.js";
+export {
+  getSchemaFromDefinition,
+  attachPromptPathAnnotations,
+} from "./schemaGenerator.js";
 export type { DefinitionWithPromptSchema } from "./schemaGenerator.js";
 
 export { buildUiSchema } from "./uiSchemaBuilder.js";

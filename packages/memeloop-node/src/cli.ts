@@ -73,22 +73,45 @@ program
       localNodeId: nodeId,
       handshakeCredential: config.auth?.ws?.mode === "lan-pin" ? config.auth?.ws?.pin ?? "" : "",
     });
-    const { runtime, storage, toolRegistry, wikiManager, agentDefinitions, fileBaseDirResolved } =
-      createNodeRuntime({
-        config,
-        dataDir,
-        terminalManager,
-        fileBaseDir: dataDir,
-        wikiBasePath,
-        peerConnectionManager,
-        localNodeId: nodeId,
-      });
+    const {
+      runtime,
+      storage,
+      toolRegistry,
+      wikiManager,
+      agentDefinitions,
+      fileBaseDirResolved,
+      refreshWikiAgentDefinitions,
+    } = createNodeRuntime({
+      config,
+      dataDir,
+      terminalManager,
+      fileBaseDir: dataDir,
+      wikiBasePath,
+      peerConnectionManager,
+      localNodeId: nodeId,
+      wikiAgentDefinitionWikiIds: config.wikiAgentDefinitionWikiIds,
+    });
+    if (wikiBasePath && refreshWikiAgentDefinitions) {
+      const fs = await import("node:fs");
+      let debounce: ReturnType<typeof setTimeout> | undefined;
+      const schedule = (): void => {
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          refreshWikiAgentDefinitions!().catch((e) => console.warn("[memeloop-node] wiki defs refresh:", e));
+        }, 900);
+      };
+      try {
+        fs.watch(wikiBasePath, { recursive: true }, schedule);
+      } catch (e) {
+        console.warn("[memeloop-node] fs.watch wikiPath failed:", e);
+      }
+    }
     const port = parseInt(opts.port, 10) || 38472;
     const mcpServers =
       config.mcpServers?.map((s) => ({ name: s.name, command: s.command, args: s.args })) ?? [];
     const wsAuth = createLanPinWsAuth(config, opts.config);
     const imChannels = config.im?.channels ?? [];
-    const imManager = new IMChannelManager();
+    const imManager = new IMChannelManager(storage);
     let imWebhookHandler: ImWebhookHandler | undefined;
     if (imChannels.length > 0) {
       const { createImWebhookHandler } = await import("./im/createImWebhookHandler.js");

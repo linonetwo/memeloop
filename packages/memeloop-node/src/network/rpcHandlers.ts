@@ -5,6 +5,7 @@
 import type { AgentDefinition, ConversationMeta, WikiInfo } from "@memeloop/protocol";
 
 import type { MemeLoopRuntime } from "memeloop";
+import { resolveQuestionAnswer } from "memeloop";
 import type { IAgentStorage } from "memeloop";
 import type { ITerminalSessionManager } from "../terminal/index.js";
 import type { IWikiManager } from "../knowledge/wikiManager.js";
@@ -111,6 +112,16 @@ export async function handleRpc(
   }
   if (method === "memeloop.agent.getDefinitions") {
     return { definitions: context.agentDefinitions ?? [] };
+  }
+  if (method === "memeloop.agent.resolveQuestion") {
+    const p = params as { questionId?: string; answer?: string };
+    const questionId = typeof p?.questionId === "string" ? p.questionId.trim() : "";
+    const answer = typeof p?.answer === "string" ? p.answer : "";
+    if (!questionId || !answer) {
+      return { ok: false };
+    }
+    const ok = resolveQuestionAnswer(questionId, answer);
+    return { ok };
   }
 
   if (terminalManager) {

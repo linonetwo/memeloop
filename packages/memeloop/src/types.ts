@@ -59,6 +59,25 @@ export interface IAgentStorage {
    * 读取会话目录行（用于 TaskAgent 解析 definitionId 等）。
    */
   getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
+
+  /** IM 用户与会话绑定（memeloop-node + SQLite 持久化）。 */
+  getImBinding?(channelId: string, imUserId: string): Promise<ImChannelBindingRecord | null>;
+  setImBinding?(record: ImChannelBindingRecord): Promise<void>;
+}
+
+/** 与 {@link IAgentStorage.getImBinding} / IMChannelManager 对齐的绑定记录。 */
+export interface ImChannelBindingRecord {
+  channelId: string;
+  imUserId: string;
+  activeConversationId: string;
+  defaultDefinitionId?: string;
+}
+
+export interface MemeLoopLogger {
+  debug?(msg: string, ...args: unknown[]): void;
+  info?(msg: string, ...args: unknown[]): void;
+  warn?(msg: string, ...args: unknown[]): void;
+  error?(msg: string, ...args: unknown[]): void;
 }
 
 export interface ILLMProvider {
@@ -73,6 +92,11 @@ export interface IToolRegistry {
   registerTool(id: string, impl: unknown): void;
   getTool(id: string): unknown | undefined;
   listTools(): string[];
+  /**
+   * Prompt-concat 插件表（defineTool 注册的 `PromptConcatTool`），按运行时隔离。
+   * 未实现时回退到进程级默认注册表（见 pluginRegistry）。
+   */
+  getPromptPlugins?: () => Map<string, (hooks: import("./tools/types.js").PromptConcatHooks) => void>;
 }
 
 export interface IChatSyncAdapter {
@@ -94,6 +118,8 @@ export interface TaskAgentRuntimeOptions {
   isCancelled?: (conversationId: string) => boolean;
   /** promptConcat 附件注入（与 PromptConcatOptions 一致） */
   readAttachmentFile?: (path: string) => Promise<Uint8Array | Buffer>;
+  /** 超过该时长的历史消息不送入 LLM（毫秒）；0 或未设置表示不裁剪 */
+  maxHistoryAgeMs?: number;
   /**
    * 在已配置 `defineTool` / plugins 时，对未被 `onResponseComplete` 处理的 tool 调用回退到 `IToolRegistry`（默认 true）。
    */
@@ -126,6 +152,8 @@ export interface AgentFrameworkContext {
    * 解析 AgentDefinition（如节点合并 YAML + 内置 + SQLite）。未设置时仅用 `storage.getAgentDefinition`。
    */
   resolveAgentDefinition?: (definitionId: string) => Promise<AgentDefinition | null>;
+  /** 未注入时 TaskAgent 等对关键路径使用 console.warn/error。 */
+  logger?: MemeLoopLogger;
 }
 
 export type AgentInstanceState =

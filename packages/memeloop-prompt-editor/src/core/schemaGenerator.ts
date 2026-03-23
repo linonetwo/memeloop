@@ -26,3 +26,19 @@ export function getSchemaFromDefinition(definition: DefinitionWithPromptSchema):
     additionalProperties: true,
   };
 }
+
+/**
+ * 将 `promptConcatStream` 产出的 `sourcePaths` 写入 schema 描述，便于表单与 prompt 节点对齐。
+ */
+export function attachPromptPathAnnotations(
+  schema: RJSFSchema,
+  sourcePaths: Record<string, string> | undefined,
+): RJSFSchema {
+  if (!sourcePaths || Object.keys(sourcePaths).length === 0) return schema;
+  const note = `MemeLoop prompt node paths: ${JSON.stringify(sourcePaths)}`;
+  const prev = typeof schema.description === "string" ? schema.description : "";
+  return {
+    ...schema,
+    description: prev ? `${prev}\n\n${note}` : note,
+  };
+}

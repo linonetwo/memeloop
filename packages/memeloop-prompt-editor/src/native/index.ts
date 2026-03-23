@@ -5,7 +5,14 @@
  * Optional peer: react-native-paper. Re-exports core + native widgets/templates.
  */
 
-export { getNativeWidgets, TextWidget, CheckboxWidget } from "./widgets.jsx";
+export {
+  getNativeWidgets,
+  TextWidget,
+  CheckboxWidget,
+  SelectWidget,
+  RadioWidget,
+  NumberWidget,
+} from "./widgets.jsx";
 export { templates } from "./templates.js";
 
 export {

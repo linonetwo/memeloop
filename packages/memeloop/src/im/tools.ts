@@ -33,6 +33,6 @@ export interface ImToolsRuntime {
 }
 
 /** 供工具实现层调用的命令式 API（避免在 core 内耦合 defineTool） */
-export function imSwitchConversation(rt: ImToolsRuntime, conversationId: string): void {
-  rt.manager.switchConversation(rt.channelId, rt.imUserId, conversationId);
+export async function imSwitchConversation(rt: ImToolsRuntime, conversationId: string): Promise<void> {
+  await rt.manager.switchConversation(rt.channelId, rt.imUserId, conversationId);
 }

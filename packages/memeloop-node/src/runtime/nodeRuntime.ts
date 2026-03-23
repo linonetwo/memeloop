@@ -49,6 +49,8 @@ export interface NodeRuntimeOptions {
   peerConnectionManager?: PeerConnectionManager;
   /** 覆盖 config.remoteAgentStreamTimeoutMs */
   remoteAgentStreamTimeoutMs?: number;
+  /** 从 Wiki 加载带 MemeLoop AgentDefinition 标签的 tiddler（默认仅 default wiki） */
+  wikiAgentDefinitionWikiIds?: string[];
 }
 
 export interface NodeRuntimeResult {
@@ -64,6 +66,8 @@ export interface NodeRuntimeResult {
   fileBaseDirResolved: string;
   /** 已连接 peer 时可用于 `syncEngine.syncOnce()` */
   syncEngine?: ChatSyncEngine;
+  /** Wiki 中 Agent 定义变更后可调用以合并进内存与 SQLite */
+  refreshWikiAgentDefinitions?: () => Promise<void>;
 }
 
 const noopNetwork: INetworkService = {
@@ -90,7 +94,12 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   for (const d of fromConfig) {
     definitionById.set(d.id, d);
   }
-  const agentDefinitions = [...definitionById.values()];
+  const agentDefinitions: AgentDefinition[] = [];
+  const rebuildAgentDefinitionsList = (): void => {
+    agentDefinitions.length = 0;
+    agentDefinitions.push(...definitionById.values());
+  };
+  rebuildAgentDefinitionsList();
   if (storage instanceof SQLiteAgentStorage) {
     storage.seedAgentDefinitions(agentDefinitions);
   }
@@ -112,6 +121,10 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     tools: toolRegistry,
     syncAdapters: [],
     network: noopNetwork,
+    logger: {
+      warn: (...a: unknown[]) => console.warn("[memeloop-node]", ...a),
+      error: (...a: unknown[]) => console.error("[memeloop-node]", ...a),
+    },
     taskAgent: {
       maxIterations: 32,
       isCancelled: (cid) => conversationCancellation.has(cid),
@@ -158,9 +171,32 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   registerFileTools(toolRegistry, fileBaseResolved);
 
   let wikiManager: IWikiManager | undefined;
+  let refreshWikiAgentDefinitions: (() => Promise<void>) | undefined;
   if (options.wikiBasePath) {
     wikiManager = new FileWikiManager(options.wikiBasePath);
     registerWikiTools(toolRegistry, wikiManager, "default");
+    const wikiIds =
+      options.wikiAgentDefinitionWikiIds?.length && options.wikiAgentDefinitionWikiIds.length > 0
+        ? options.wikiAgentDefinitionWikiIds
+        : ["default"];
+    refreshWikiAgentDefinitions = async () => {
+      for (const wid of wikiIds) {
+        wikiManager!.clearWikiCache(wid);
+      }
+      for (const wid of wikiIds) {
+        const defs = await wikiManager!.listAgentDefinitionsFromWiki(wid);
+        for (const d of defs) {
+          definitionById.set(d.id, d);
+        }
+      }
+      rebuildAgentDefinitionsList();
+      if (storage instanceof SQLiteAgentStorage) {
+        storage.seedAgentDefinitions(agentDefinitions);
+      }
+    };
+    void refreshWikiAgentDefinitions().catch((e) => {
+      context.logger?.warn?.("wiki agent definitions load failed", e);
+    });
   }
   registerVscodeTools(toolRegistry);
 
@@ -189,5 +225,6 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     agentDefinitions,
     fileBaseDirResolved: fileBaseResolved,
     syncEngine,
+    refreshWikiAgentDefinitions,
   };
 }

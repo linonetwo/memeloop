@@ -8,6 +8,8 @@ import type {
   AgentInstanceMeta,
 } from "@memeloop/protocol";
 
+import type { ImChannelBindingRecord } from "../types.js";
+
 import type {
   IAgentStorage,
   ListConversationsOptions,
@@ -105,6 +107,21 @@ export class SQLiteAgentStorage implements IAgentStorage {
           definitionId TEXT PRIMARY KEY,
           definitionJson TEXT NOT NULL,
           updatedAt INTEGER NOT NULL
+        );
+      `,
+      )
+      .run();
+
+    this.db
+      .prepare(
+        `
+        CREATE TABLE IF NOT EXISTS im_bindings (
+          channelId TEXT NOT NULL,
+          imUserId TEXT NOT NULL,
+          activeConversationId TEXT NOT NULL,
+          defaultDefinitionId TEXT,
+          updatedAt INTEGER NOT NULL,
+          PRIMARY KEY (channelId, imUserId)
         );
       `,
       )
@@ -445,6 +462,54 @@ export class SQLiteAgentStorage implements IAgentStorage {
       isUserInitiated: Boolean(row.isUserInitiated),
       sourceChannel: row.sourceChannelJson ? JSON.parse(row.sourceChannelJson) : undefined,
     };
+  }
+
+  async getImBinding(channelId: string, imUserId: string): Promise<ImChannelBindingRecord | null> {
+    const row = this.db
+      .prepare(
+        `
+        SELECT channelId, imUserId, activeConversationId, defaultDefinitionId, updatedAt
+        FROM im_bindings WHERE channelId = ? AND imUserId = ? LIMIT 1
+      `,
+      )
+      .get(channelId, imUserId) as
+      | {
+          channelId: string;
+          imUserId: string;
+          activeConversationId: string;
+          defaultDefinitionId: string | null;
+          updatedAt: number;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      channelId: row.channelId,
+      imUserId: row.imUserId,
+      activeConversationId: row.activeConversationId,
+      defaultDefinitionId: row.defaultDefinitionId ?? undefined,
+    };
+  }
+
+  async setImBinding(record: ImChannelBindingRecord): Promise<void> {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `
+        INSERT INTO im_bindings (channelId, imUserId, activeConversationId, defaultDefinitionId, updatedAt)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(channelId, imUserId) DO UPDATE SET
+          activeConversationId = excluded.activeConversationId,
+          defaultDefinitionId = excluded.defaultDefinitionId,
+          updatedAt = excluded.updatedAt
+      `,
+      )
+      .run(
+        record.channelId,
+        record.imUserId,
+        record.activeConversationId,
+        record.defaultDefinitionId ?? null,
+        now,
+      );
   }
 }
 

@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  better-sqlite3: ^11.10.0
+
 importers:
 
   .:
@@ -20,6 +23,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^2.0.0
         version: 2.1.9(vitest@2.1.9(@types/node@22.19.15))
+      cross-env:
+        specifier: ^7.0.3
+        version: 7.0.3
       eslint:
         specifier: ^9.0.0
         version: 9.39.4
@@ -51,8 +57,8 @@ importers:
         specifier: workspace:*
         version: link:../memeloop-protocol
       better-sqlite3:
-        specifier: ^9.0.0
-        version: 9.6.0
+        specifier: ^11.10.0
+        version: 11.10.0
       bonjour-service:
         specifier: ^1.2.0
         version: 1.3.0
@@ -145,6 +151,12 @@ importers:
 
   packages/memeloop-prompt-editor:
     devDependencies:
+      '@mui/icons-material':
+        specifier: ^6.0.0
+        version: 6.5.0(@mui/material@6.5.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(@types/react@18.3.28)(react@18.3.1)
+      '@mui/material':
+        specifier: ^6.0.0
+        version: 6.5.0(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react@18.3.1))(@types/react@18.3.28)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@rjsf/core':
         specifier: ^5.0.0
         version: 5.24.13(@rjsf/utils@5.24.13(react@18.3.1))(react@18.3.1)
@@ -1388,8 +1400,8 @@ packages:
   base64-js@1.5.1:
     resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
 
-  better-sqlite3@9.6.0:
-    resolution: {integrity: sha512-yR5HATnqeYNVnkaUTf4bOP2dJSnyhP4puJN/QPRyx4YkBEEUxib422n2XzPqDEHjQQqazoYoADdAm5vE15+dAQ==}
+  better-sqlite3@11.10.0:
+    resolution: {integrity: sha512-EwhOpyXiOEL/lKzHz9AW1msWFNzGc/z+LzeB3/jnFJpxu+th2yqvzsSWas1v9jgs9+xiXJcD5A8CJxAG2TaghQ==}
 
   bindings@1.5.0:
     resolution: {integrity: sha512-p2q/t/mhvuOj/UeLlV6566GD/guowlr0hHxClI0W9m7MWYkL1F0hLo+0Aexs9HSPCtR1SXQ0TD3MMKrXZajbiQ==}
@@ -1565,6 +1577,11 @@ packages:
 
   create-require@1.1.1:
     resolution: {integrity: sha512-dcKFX3jn0MpIaXjisoRvexIJVEKzaq7z2rZKxf+MSr9TkdmHmsU4m2lcLojrj/FHl8mk5VxMmYA+ftRkP/3oKQ==}
+
+  cross-env@7.0.3:
+    resolution: {integrity: sha512-+/HKd6EgcQCJGh2PSjZuUitQBQynKor4wrFbRg4DtAgS1aWO+gU52xpH7M9ScGgXSYmAVS9bIJ8EzuaGw0oNAw==}
+    engines: {node: '>=10.14', npm: '>=6', yarn: '>=1'}
+    hasBin: true
 
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
@@ -4600,7 +4617,7 @@ snapshots:
 
   base64-js@1.5.1: {}
 
-  better-sqlite3@9.6.0:
+  better-sqlite3@11.10.0:
     dependencies:
       bindings: 1.5.0
       prebuild-install: 7.1.3
@@ -4787,6 +4804,10 @@ snapshots:
       yaml: 1.10.2
 
   create-require@1.1.1: {}
+
+  cross-env@7.0.3:
+    dependencies:
+      cross-spawn: 7.0.6
 
   cross-spawn@7.0.6:
     dependencies:

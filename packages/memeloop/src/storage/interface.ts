@@ -21,6 +21,9 @@ export interface IAgentStorage {
   getMaxLamportClockForConversation?(conversationId: string): Promise<number>;
   saveAgentInstance(meta: AgentInstanceMeta): Promise<void>;
   getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
+
+  getImBinding?(channelId: string, imUserId: string): Promise<import("../types.js").ImChannelBindingRecord | null>;
+  setImBinding?(record: import("../types.js").ImChannelBindingRecord): Promise<void>;
 }
 
 export type { ConversationQueryMode, GetMessagesOptions, ListConversationsOptions };

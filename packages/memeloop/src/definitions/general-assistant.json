@@ -3,7 +3,7 @@
   "name": "通用助手",
   "description": "通用自然语言助理，用于日常问答和简单任务。",
   "systemPrompt": "You are a helpful general-purpose assistant.",
-  "tools": [],
+  "tools": ["file.read", "file.search"],
   "agentFrameworkConfig": {
     "prompts": [
       {
@@ -12,7 +12,7 @@
         "text": "You are a helpful general-purpose assistant."
       }
     ],
-    "plugins": [],
+    "plugins": [{ "toolId": "fullReplacement" }],
     "response": []
   },
   "modelConfig": {

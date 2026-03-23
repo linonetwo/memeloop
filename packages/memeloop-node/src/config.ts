@@ -97,6 +97,8 @@ export interface NodeConfig {
   tools?: ToolPermissionConfig;
   /** Wiki storage path (local knowledge base). */
   wikiPath?: string;
+  /** 从哪些 wiki 子目录加载带 MemeLoop AgentDefinition 标签的 tiddler（默认 ["default"]，与 wiki.* 工具 wikiId 一致） */
+  wikiAgentDefinitionWikiIds?: string[];
   /** Node display name. */
   name?: string;
   /** Local MCP servers (name + command to start). */

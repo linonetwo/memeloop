@@ -3,7 +3,7 @@
  */
 import type { ToolCallingMatch } from "./responsePatternUtility.js";
 import type { IPrompt } from "./types.js";
-import { createAgentFrameworkHooks, pluginRegistry, runPostProcessHooks } from "../tools/pluginRegistry.js";
+import { createAgentFrameworkHooks, resolvePromptPluginMap, runPostProcessHooks } from "../tools/pluginRegistry.js";
 import type { AgentResponse, DefineToolAgentFrameworkContext, FrameworkPluginToolConfig } from "../tools/types.js";
 import type { AgentInstanceMessage } from "../types.js";
 import type { YieldNextRoundTarget } from "../tools/types.js";
@@ -30,8 +30,9 @@ export async function responseConcat(
   );
 
   const hooks = createAgentFrameworkHooks();
+  const pluginMap = resolvePromptPluginMap(agentFrameworkContext);
   for (const tool of toolConfigs) {
-    const builtInTool = pluginRegistry.get(tool.toolId);
+    const builtInTool = pluginMap.get(tool.toolId);
     if (builtInTool) {
       builtInTool(hooks);
     }

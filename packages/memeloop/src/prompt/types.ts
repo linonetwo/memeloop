@@ -8,6 +8,10 @@ export interface PromptNode {
   children?: PromptNode[];
   /** UI 溯源，可选 */
   source?: unknown;
+  /**
+   * 与插件 `dynamicPosition` 配合：用户轮次 ≥2 时将根级该节点移到列表末尾。
+   */
+  dynamicPosition?: "deferToEnd";
 }
 
 /** 与 TidGi `IPrompt` 对齐的别名 */

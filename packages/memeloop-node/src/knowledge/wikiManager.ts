@@ -7,15 +7,26 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import type { AgentDefinition } from "@memeloop/protocol";
 import type { ITiddlerFields } from "tiddlywiki";
 
+import type { AgentDefinitionYaml } from "../config.js";
+import { normalizeAgentDefinition } from "../config.js";
+
 export type TiddlerFields = ITiddlerFields;
+
+/** Wiki tiddlers tagged with this are parsed as JSON {@link AgentDefinition}. */
+export const MEMELOOP_AGENT_DEFINITION_TAG = "$:/tags/MemeLoop/AgentDefinition";
 
 export interface IWikiManager {
   getTiddler(wikiId: string, title: string): Promise<ITiddlerFields | null>;
   setTiddler(wikiId: string, tiddler: ITiddlerFields): Promise<void>;
   listTiddlers(wikiId: string, filter?: { tag?: string; type?: string }): Promise<ITiddlerFields[]>;
   search(wikiId: string, query: string): Promise<ITiddlerFields[]>;
+  /** Tiddlers with tag {@link MEMELOOP_AGENT_DEFINITION_TAG}：正文为 AgentDefinition JSON。 */
+  listAgentDefinitionsFromWiki(wikiId: string): Promise<AgentDefinition[]>;
+  /** 丢弃已 boot 的 Wiki 实例（文件变更后应在重新加载前调用）。 */
+  clearWikiCache(wikiId?: string): void;
 }
 
 type TiddlyWikiInstance = {
@@ -83,6 +94,14 @@ export class TiddlyWikiWikiManager implements IWikiManager {
     return p;
   }
 
+  clearWikiCache(wikiId?: string): void {
+    if (wikiId === undefined) {
+      this.cache.clear();
+    } else {
+      this.cache.delete(wikiId);
+    }
+  }
+
   async getTiddler(wikiId: string, title: string): Promise<ITiddlerFields | null> {
     const $tw = await this.getWiki(wikiId);
     const tiddler = $tw.wiki.getTiddler(title);
@@ -129,6 +148,27 @@ export class TiddlyWikiWikiManager implements IWikiManager {
     }
     return out;
   }
+
+  async listAgentDefinitionsFromWiki(wikiId: string): Promise<AgentDefinition[]> {
+    const all = await this.listTiddlers(wikiId);
+    const out: AgentDefinition[] = [];
+    for (const t of all) {
+      const tags = t.tags;
+      const hasTag = Array.isArray(tags) && tags.includes(MEMELOOP_AGENT_DEFINITION_TAG);
+      if (!hasTag) continue;
+      const text = typeof t.text === "string" ? t.text : "";
+      if (!text.trim()) continue;
+      try {
+        const raw = JSON.parse(text) as AgentDefinitionYaml;
+        if (raw && typeof raw.id === "string") {
+          out.push(normalizeAgentDefinition(raw));
+        }
+      } catch {
+        /* skip invalid JSON */
+      }
+    }
+    return out;
+  }
 }
 
 /** @deprecated Use TiddlyWikiWikiManager. FileWikiManager kept for backward compat or environments without tiddlywiki. */
@@ -148,5 +188,11 @@ export class FileWikiManager implements IWikiManager {
   }
   search(wikiId: string, query: string): Promise<ITiddlerFields[]> {
     return this.impl.search(wikiId, query);
+  }
+  listAgentDefinitionsFromWiki(wikiId: string): Promise<AgentDefinition[]> {
+    return this.impl.listAgentDefinitionsFromWiki(wikiId);
+  }
+  clearWikiCache(wikiId?: string): void {
+    this.impl.clearWikiCache(wikiId);
   }
 }

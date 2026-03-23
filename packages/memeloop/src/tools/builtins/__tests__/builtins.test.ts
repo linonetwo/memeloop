@@ -12,6 +12,7 @@ import {
   mcpClientImpl,
   spawnAgentImpl,
   remoteAgentListImpl,
+  ASK_QUESTION_TOOL_ID,
 } from "../index.js";
 import type { BuiltinToolContext } from "../types.js";
 
@@ -54,7 +55,7 @@ function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): Buil
 
 describe("builtin tools", () => {
   describe("registerBuiltinTools", () => {
-    it("registers mcpClient, spawnAgent, remoteAgent with registry and schema", () => {
+    it("registers mcpClient, spawnAgent, remoteAgent, askQuestion with registry and schema", () => {
       const registry: IToolRegistry = {
         registerTool: vi.fn(),
         getTool: vi.fn(),
@@ -65,6 +66,7 @@ describe("builtin tools", () => {
       expect(registry.registerTool).toHaveBeenCalledWith("mcpClient", expect.any(Function));
       expect(registry.registerTool).toHaveBeenCalledWith("spawnAgent", expect.any(Function));
       expect(registry.registerTool).toHaveBeenCalledWith("remoteAgent", expect.any(Function));
+      expect(registry.registerTool).toHaveBeenCalledWith(ASK_QUESTION_TOOL_ID, expect.any(Function));
     });
   });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { AttachmentRef, ChatMessage, ConversationMeta } from "@memeloop/protocol";
+import type { AgentDefinition, AttachmentRef, ChatMessage, ConversationMeta } from "@memeloop/protocol";
 
 import { SQLiteAgentStorage } from "../sqliteStorage.js";
 
@@ -118,6 +118,33 @@ describe("SQLiteAgentStorage", () => {
     const loaded = await storage.getAttachment(ref.contentHash);
     expect(loaded).not.toBeNull();
     expect(loaded?.filename).toBe("a.txt");
+  });
+
+  it("seedAgentDefinitions + getAgentDefinition round-trip", async () => {
+    const storage = new SQLiteAgentStorage();
+    const def: AgentDefinition = {
+      id: "memeloop:seed-test",
+      name: "Seed",
+      description: "d",
+      systemPrompt: "sys",
+      tools: [],
+      version: "1",
+    };
+    storage.seedAgentDefinitions([def]);
+    const loaded = await storage.getAgentDefinition("memeloop:seed-test");
+    expect(loaded?.id).toBe("memeloop:seed-test");
+    expect(loaded?.systemPrompt).toBe("sys");
+    expect(await storage.getAgentDefinition("missing")).toBeNull();
+  });
+
+  it("getMaxLamportClockForConversation uses SQL MAX", async () => {
+    const storage = new SQLiteAgentStorage();
+    await storage.appendMessage(createMessage({ messageId: "a", lamportClock: 7 }));
+    await storage.appendMessage(
+      createMessage({ messageId: "b", lamportClock: 42, content: "x" }),
+    );
+    const max = await storage.getMaxLamportClockForConversation("c1");
+    expect(max).toBe(42);
   });
 });
 

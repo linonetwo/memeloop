@@ -12,7 +12,7 @@
         "text": "You are a senior software engineer helping the user write and refactor code. Prefer small, safe edits; use file.read and file.search before changing code; use terminal.execute for build/tests when appropriate."
       }
     ],
-    "plugins": [],
+    "plugins": [{ "toolId": "fullReplacement" }],
     "response": []
   },
   "modelConfig": {

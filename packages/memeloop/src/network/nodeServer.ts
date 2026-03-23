@@ -234,16 +234,60 @@ export function createNodeServer(
       return;
     }
     const ws = new WebSocket(request, socket, head);
-    let wsAuthenticated = !wsAuth;
+    /** 无 wsAuth 时等同已认证；有 wsAuth 时经 handshake 后为 authed。 */
+    type WsAuthState = "awaiting_handshake" | "pending_verify" | "authed" | "rejected";
+    let authState: WsAuthState = wsAuth ? "awaiting_handshake" : "authed";
+    /** 异步校验期间到达的消息，认证成功后按序处理（避免 verify 完成前误拒后续 RPC）。 */
+    const pendingWhileVerifying: string[] = [];
 
-    ws.onmessage = (event: { data: string | Buffer | ArrayBuffer }) => {
-      const raw =
-        typeof event.data === "string"
-          ? event.data
-          : Buffer.isBuffer(event.data)
-            ? event.data.toString()
-            : String(event.data);
+    const sendRpc = (payload: Record<string, unknown>): void => {
+      try {
+        ws.send(JSON.stringify(payload));
+      } catch {
+        /* ignore */
+      }
+    };
 
+    const runRpc = (
+      msg: {
+        jsonrpc?: string;
+        method?: string;
+        params?: unknown;
+        id?: number | null;
+      },
+    ): void => {
+      if (msg.jsonrpc !== "2.0" || !msg.method) {
+        sendRpc({
+          jsonrpc: "2.0",
+          error: { code: -32600, message: "Invalid Request" },
+          id: msg.id ?? null,
+        });
+        return;
+      }
+      void rpcHandler(msg.method, msg.params ?? {})
+        .then((result) => {
+          if (msg.id != null) {
+            sendRpc({ jsonrpc: "2.0", id: msg.id, result });
+          }
+        })
+        .catch((err) => {
+          sendRpc({
+            jsonrpc: "2.0",
+            error: { code: -32603, message: String(err) },
+            id: msg.id != null ? msg.id : null,
+          });
+        });
+    };
+
+    const flushPendingQueue = (): void => {
+      while (pendingWhileVerifying.length > 0) {
+        const raw = pendingWhileVerifying.shift();
+        if (raw === undefined) break;
+        dispatchRawMessage(raw);
+      }
+    };
+
+    const dispatchRawMessage = (raw: string): void => {
       let msg: {
         jsonrpc?: string;
         method?: string;
@@ -253,139 +297,139 @@ export function createNodeServer(
       try {
         msg = JSON.parse(raw) as typeof msg;
       } catch {
-        ws.send(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32700, message: "Parse error" },
-            id: null,
-          }),
-        );
+        sendRpc({
+          jsonrpc: "2.0",
+          error: { code: -32700, message: "Parse error" },
+          id: null,
+        });
         return;
       }
 
-      if (!wsAuthenticated && wsAuth) {
-        if (msg.jsonrpc !== "2.0" || !msg.method) {
-          ws.send(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              error: { code: -32600, message: "Invalid Request" },
-              id: msg.id ?? null,
-            }),
-          );
-          try {
-            ws.close();
-          } catch {
-            /* ignore */
-          }
+      if (authState === "authed") {
+        runRpc(msg);
+        return;
+      }
+
+      if (authState === "rejected") {
+        return;
+      }
+
+      if (!wsAuth) {
+        runRpc(msg);
+        return;
+      }
+
+      if (authState === "pending_verify") {
+        if (msg.method === "memeloop.auth.handshake") {
+          sendRpc({
+            jsonrpc: "2.0",
+            id: msg.id ?? null,
+            error: {
+              code: -32600,
+              message: "Authentication already in progress",
+            },
+          });
           return;
         }
-        if (msg.method !== "memeloop.auth.handshake") {
-          ws.send(
-            JSON.stringify({
+        pendingWhileVerifying.push(raw);
+        return;
+      }
+
+      // awaiting_handshake
+      if (msg.jsonrpc !== "2.0" || !msg.method) {
+        sendRpc({
+          jsonrpc: "2.0",
+          error: { code: -32600, message: "Invalid Request" },
+          id: msg.id ?? null,
+        });
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      if (msg.method !== "memeloop.auth.handshake") {
+        sendRpc({
+          jsonrpc: "2.0",
+          id: msg.id ?? null,
+          error: {
+            code: -32001,
+            message: "Authentication required: send memeloop.auth.handshake first",
+          },
+        });
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      const parsed = parseAuthHandshakeMessage(raw);
+      if (!parsed) {
+        sendRpc({
+          jsonrpc: "2.0",
+          id: msg.id ?? null,
+          error: { code: -32602, message: "Invalid handshake params" },
+        });
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      authState = "pending_verify";
+      void wsAuth
+        .verify(parsed)
+        .then((ok) => {
+          if (!ok) {
+            authState = "rejected";
+            sendRpc({
               jsonrpc: "2.0",
               id: msg.id ?? null,
-              error: {
-                code: -32001,
-                message: "Authentication required: send memeloop.auth.handshake first",
-              },
-            }),
-          );
-          try {
-            ws.close();
-          } catch {
-            /* ignore */
-          }
-          return;
-        }
-        const parsed = parseAuthHandshakeMessage(raw);
-        if (!parsed) {
-          ws.send(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              id: msg.id ?? null,
-              error: { code: -32602, message: "Invalid handshake params" },
-            }),
-          );
-          try {
-            ws.close();
-          } catch {
-            /* ignore */
-          }
-          return;
-        }
-        void wsAuth
-          .verify(parsed)
-          .then((ok) => {
-            if (!ok) {
-              ws.send(
-                JSON.stringify({
-                  jsonrpc: "2.0",
-                  id: msg.id ?? null,
-                  error: { code: -32002, message: "Authentication failed" },
-                }),
-              );
-              try {
-                ws.close();
-              } catch {
-                /* ignore */
-              }
-              return;
-            }
-            wsAuthenticated = true;
-            if (msg.id != null) {
-              ws.send(
-                JSON.stringify({
-                  jsonrpc: "2.0",
-                  id: msg.id,
-                  result: { ok: true, nodeId },
-                }),
-              );
-            }
-          })
-          .catch((err) => {
-            ws.send(
-              JSON.stringify({
-                jsonrpc: "2.0",
-                id: msg.id ?? null,
-                error: { code: -32603, message: String(err) },
-              }),
-            );
+              error: { code: -32002, message: "Authentication failed" },
+            });
             try {
               ws.close();
             } catch {
               /* ignore */
             }
-          });
-        return;
-      }
-
-      if (msg.jsonrpc !== "2.0" || !msg.method) {
-        ws.send(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32600, message: "Invalid Request" },
-            id: msg.id ?? null,
-          }),
-        );
-        return;
-      }
-      rpcHandler(msg.method, msg.params ?? {})
-        .then((result) => {
-          if (msg.id != null) {
-            ws.send(
-              JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }),
-            );
+            return;
           }
+          authState = "authed";
+          if (msg.id != null) {
+            sendRpc({
+              jsonrpc: "2.0",
+              id: msg.id,
+              result: { ok: true, nodeId },
+            });
+          }
+          flushPendingQueue();
         })
         .catch((err) => {
-          ws.send(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              error: { code: -32603, message: String(err) },
-              id: msg.id != null ? msg.id : null,
-            }),
-          );
+          authState = "rejected";
+          sendRpc({
+            jsonrpc: "2.0",
+            id: msg.id ?? null,
+            error: { code: -32603, message: String(err) },
+          });
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
         });
+    };
+
+    ws.onmessage = (event: { data: string | Buffer | ArrayBuffer }) => {
+      const raw =
+        typeof event.data === "string"
+          ? event.data
+          : Buffer.isBuffer(event.data)
+            ? event.data.toString()
+            : String(event.data);
+      dispatchRawMessage(raw);
     };
   });
 

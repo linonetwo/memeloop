@@ -1,4 +1,4 @@
-import type { IToolRegistry } from "memeloop";
+import type { IToolRegistry, PromptConcatTool } from "memeloop";
 import type { ToolPermissionConfig } from "../config.js";
 
 /**
@@ -6,10 +6,15 @@ import type { ToolPermissionConfig } from "../config.js";
  */
 export class ToolRegistry implements IToolRegistry {
   private tools = new Map<string, unknown>();
+  private readonly promptPlugins = new Map<string, PromptConcatTool>();
   private permission: ToolPermissionConfig | undefined;
 
   constructor(permission?: ToolPermissionConfig) {
     this.permission = permission;
+  }
+
+  getPromptPlugins(): Map<string, PromptConcatTool> {
+    return this.promptPlugins;
   }
 
   registerTool(id: string, impl: unknown): void {

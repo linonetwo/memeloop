@@ -1,8 +1,29 @@
 import type { ChatMessage } from "@memeloop/protocol";
 
 import type { AgentFrameworkContext } from "../types.js";
-import { createAgentFrameworkHooks, pluginRegistry, runProcessPromptsHooks } from "../tools/pluginRegistry.js";
+import { createAgentFrameworkHooks, resolvePromptPluginMap, runProcessPromptsHooks } from "../tools/pluginRegistry.js";
 import type { AgentPromptDescription, PromptNode, PromptPluginConfig } from "./types.js";
+
+/** 将 prompt 节点 `id` 映射到 agentFrameworkConfig.prompts 树中的索引路径（供 UI / schema 注解）。 */
+export function collectPromptSourcePaths(
+  prompts: PromptNode[],
+  basePath = "agentFrameworkConfig.prompts",
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  function walk(nodes: PromptNode[], prefix: string): void {
+    nodes.forEach((n, i) => {
+      const p = `${prefix}.${i}`;
+      if (n.id) {
+        out[n.id] = p;
+      }
+      if (n.children?.length) {
+        walk(n.children, `${p}.children`);
+      }
+    });
+  }
+  walk(prompts, basePath);
+  return out;
+}
 
 const logger = {
   debug: (..._args: unknown[]) => {},
@@ -80,6 +101,8 @@ export interface PromptConcatStreamState {
   flatPrompts: PromptFlatModelMessage[];
   step: "flatten" | "complete";
   isComplete: boolean;
+  /** prompt 节点 id → JSON 路径（如 agentFrameworkConfig.prompts.0） */
+  sourcePaths?: Record<string, string>;
 }
 
 export interface PromptConcatOptions {
@@ -97,8 +120,9 @@ export async function* promptConcatStream(
   const plugins: PromptPluginConfig[] = frameworkConfig?.plugins ?? [];
 
   const hooks = createAgentFrameworkHooks();
+  const pluginMap = resolvePromptPluginMap(agentFrameworkContext);
   for (const plugin of plugins) {
-    const entry = pluginRegistry.get(plugin.toolId);
+    const entry = pluginMap.get(plugin.toolId);
     if (entry) entry(hooks);
   }
 
@@ -147,6 +171,7 @@ export async function* promptConcatStream(
     flatPrompts: flat,
     step: "complete",
     isComplete: true,
+    sourcePaths: collectPromptSourcePaths(processed),
   };
 
   yield state;

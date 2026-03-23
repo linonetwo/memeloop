@@ -1,11 +1,12 @@
 import type { AgentDefinition, ChatMessage } from "@memeloop/protocol";
 
 import { matchAllToolCallings, type ToolCallingMatch } from "../prompt/responsePatternUtility.js";
+import { filterOldMessagesByDuration } from "../prompt/utilities.js";
 import { promptConcatStream } from "../prompt/promptConcat.js";
 import { responseConcat } from "../prompt/responseConcat.js";
 import type { AgentFrameworkContext } from "../types.js";
 import { nextLamportClockForConversation } from "../storage/nextLamport.js";
-import { createHooksWithPlugins, runResponseCompleteHooks } from "../tools/pluginRegistry.js";
+import { createHooksWithPlugins, resolvePromptPluginMap, runResponseCompleteHooks } from "../tools/pluginRegistry.js";
 import type { DefineToolAgentFrameworkContext } from "../tools/types.js";
 import { agentInstanceMessageToChatMessage, chatMessagesToAgentMessages } from "./agentMessageBridge.js";
 
@@ -90,6 +91,9 @@ async function buildLlmMessages(
   const definitionId = await inferDefinitionId(context.storage, conversationId);
   const def = await resolveAgentDefinitionModel(context, definitionId);
   const fw = def?.agentFrameworkConfig as { prompts?: unknown[]; plugins?: unknown[] } | undefined;
+  const maxHistoryAgeMs = context.taskAgent?.maxHistoryAgeMs ?? 0;
+  const historyForPrompt =
+    maxHistoryAgeMs > 0 ? filterOldMessagesByDuration(history, maxHistoryAgeMs) : history;
 
   if (fw?.prompts && Array.isArray(fw.prompts) && fw.prompts.length > 0) {
     const readAttachmentFile = context.taskAgent?.readAttachmentFile;
@@ -101,7 +105,7 @@ async function buildLlmMessages(
           response: [],
         },
       },
-      history,
+      historyForPrompt,
       context,
       readAttachmentFile ? { readAttachmentFile } : undefined,
     );
@@ -113,15 +117,15 @@ async function buildLlmMessages(
       lastFlat.length > 0 && lastFlat[lastFlat.length - 1]?.role === "user"
         ? lastFlat.slice(0, -1)
         : lastFlat;
-    return [...withoutTrailingUser, ...history.map(chatMessageToModelMessage)];
+    return [...withoutTrailingUser, ...historyForPrompt.map(chatMessageToModelMessage)];
   }
 
   const systemText = typeof def?.systemPrompt === "string" ? def.systemPrompt.trim() : "";
   if (systemText.length > 0) {
-    return [{ role: "system", content: systemText }, ...history.map(chatMessageToModelMessage)];
+    return [{ role: "system", content: systemText }, ...historyForPrompt.map(chatMessageToModelMessage)];
   }
 
-  return history.map(chatMessageToModelMessage);
+  return historyForPrompt.map(chatMessageToModelMessage);
 }
 
 function formatToolResultMessage(toolName: string, parameters: Record<string, unknown>, body: string, isError: boolean): string {
@@ -162,6 +166,8 @@ async function executeRegistryTool(
     return { text: typeof raw === "string" ? raw : JSON.stringify(raw), isError: false };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const log = context.logger?.warn ?? console.warn.bind(console);
+    log("[taskAgent] tool execution error", toolId, message);
     return { text: message, isError: true };
   }
 }
@@ -280,7 +286,9 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
       const { calls, parallel } = matchAllToolCallings(assistantText);
 
       if (hasPlugins && fw) {
-        const { hooks } = await createHooksWithPlugins(fw as { plugins: Array<{ toolId: string }> });
+        const { hooks } = await createHooksWithPlugins(fw as { plugins: Array<{ toolId: string }> }, {
+          pluginRegistry: resolvePromptPluginMap(context),
+        });
         const rcPayload: {
           agentFrameworkContext: DefineToolAgentFrameworkContext;
           response: { status: "done"; content: string };

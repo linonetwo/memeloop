@@ -20,7 +20,7 @@ import type {
   ToolHandlerContext,
 } from "./defineToolTypes.js";
 import { executeToolCallsParallel, executeToolCallsSequential } from "./parallelExecution.js";
-import { pluginRegistry } from "./pluginRegistry.js";
+import { getActivePluginRegistry } from "./pluginRegistry.js";
 import { schemaToToolContent } from "./schemaToToolContent.js";
 import type { AIResponseContext, PromptConcatHookContext, PromptConcatTool } from "./types.js";
 import type { AgentInstanceMessage } from "../types.js";
@@ -622,7 +622,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
     }
   };
 
-  pluginRegistry.set(toolId, tool);
+  getActivePluginRegistry().set(toolId, tool);
 
   return {
     tool,

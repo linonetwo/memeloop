@@ -37,6 +37,9 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
    * `remoteAgent` 等待远端流式输出的超时（毫秒）。默认 30000。
    */
   remoteAgentStreamTimeoutMs?: number;
+
+  /** `askQuestion` 阻塞前回调（可将 questionId 推送到 IM / UI，供 `resolveQuestion` RPC 回填）。 */
+  notifyAskQuestion?(payload: { questionId: string; question: string; conversationId: string }): void;
 }
 
 /** Tool implementation: (args, context) => result. Context is bound at registration time. */

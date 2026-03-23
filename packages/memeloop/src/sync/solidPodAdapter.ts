@@ -34,6 +34,8 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
   private readonly fetchFn: typeof globalThis.fetch | undefined;
   private readonly pushIntervalMs: number;
   private timerId: ReturnType<typeof setInterval> | undefined;
+  /** 上次成功全量/增量推送完成时间；用于跳过未改动的会话的 `getMessages`。 */
+  private lastPushCompletedAt = 0;
 
   constructor(options: SolidPodSyncAdapterOptions) {
     this.podRootUrl = options.podRootUrl.replace(/\/?$/, "/");
@@ -85,10 +87,34 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
       const conversations = await this.storage.listConversations({});
       const versionVector: Record<string, number> = {};
       const messagesByConversation: BackupPayload["messagesByConversation"] = {};
+      const previous =
+        this.lastPushCompletedAt > 0 ? await this.pullFromPod().catch(() => null) : null;
 
       for (const meta of conversations) {
-        const messages = await this.storage.getMessages(meta.conversationId, { mode: "full-content" });
-        messagesByConversation[meta.conversationId] = messages.map((m) => ({
+        const cid = meta.conversationId;
+        const unchanged =
+          previous &&
+          typeof meta.lastMessageTimestamp === "number" &&
+          meta.lastMessageTimestamp <= this.lastPushCompletedAt &&
+          Array.isArray(previous.messagesByConversation[cid]);
+
+        let messages: ChatMessage[];
+        if (unchanged) {
+          const prevRows = previous!.messagesByConversation[cid]!;
+          messages = prevRows.map((m) => ({
+            messageId: m.messageId,
+            conversationId: m.conversationId ?? cid,
+            originNodeId: m.originNodeId,
+            timestamp: m.timestamp,
+            lamportClock: m.lamportClock,
+            role: m.role as ChatMessage["role"],
+            content: m.content,
+          }));
+        } else {
+          messages = await this.storage.getMessages(cid, { mode: "full-content" });
+        }
+
+        messagesByConversation[cid] = messages.map((m) => ({
           messageId: m.messageId,
           conversationId: m.conversationId,
           originNodeId: m.originNodeId,
@@ -118,6 +144,7 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
         await createContainerAt(this.containerUrl, { fetch: this.fetchFn });
         await overwriteFile(this.backupFileUrl, blob, { fetch: this.fetchFn });
       }
+      this.lastPushCompletedAt = payload.exportedAt;
     } catch {
       /* Pod 不可用时静默跳过 */
     }
