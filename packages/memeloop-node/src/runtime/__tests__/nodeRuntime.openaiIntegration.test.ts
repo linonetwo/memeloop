@@ -108,4 +108,19 @@ describe("createNodeRuntime + mock OpenAI HTTP", () => {
       await mock.stop();
     }
   });
+
+  it("registers node environment tools in memeloop-node runtime", async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "memeloop-node-tools-"));
+    dirs.push(dataDir);
+    const { toolRegistry } = createNodeRuntime({
+      config: { providers: [] },
+      dataDir,
+    });
+    const tools = toolRegistry.listTools();
+    expect(tools).toContain("file.read");
+    expect(tools).toContain("git");
+    expect(tools).toContain("webFetch");
+    expect(tools).toContain("todo");
+    expect(tools).toContain("summary");
+  });
 });

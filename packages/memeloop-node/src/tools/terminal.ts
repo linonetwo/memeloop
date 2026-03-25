@@ -9,6 +9,8 @@ import type { ITerminalSessionManager } from "../terminal/index.js";
 const EXECUTE_ID = "terminal.execute";
 const LIST_ID = "terminal.list";
 const RESPOND_ID = "terminal.respond";
+const FOLLOW_ID = "terminal.follow";
+const CANCEL_ID = "terminal.cancel";
 
 export function registerTerminalTools(
   registry: IToolRegistry,
@@ -23,6 +25,12 @@ export function registerTerminalTools(
   registry.registerTool(RESPOND_ID, (args: Record<string, unknown>) =>
     respondImpl(args, sessionManager),
   );
+  registry.registerTool(FOLLOW_ID, (args: Record<string, unknown>) =>
+    followImpl(args, sessionManager),
+  );
+  registry.registerTool(CANCEL_ID, (args: Record<string, unknown>) =>
+    cancelImpl(args, sessionManager),
+  );
 }
 
 async function executeImpl(
@@ -32,6 +40,13 @@ async function executeImpl(
   const command = args.command as string | undefined;
   const timeoutMs = (args.timeoutMs as number) ?? 60_000;
   const cwd = args.cwd as string | undefined;
+  const waitMode =
+    args.waitMode === "until-exit" || args.waitMode === "until-timeout" || args.waitMode === "detached"
+      ? (args.waitMode as "until-exit" | "until-timeout" | "detached")
+      : "until-timeout";
+  const maxWaitMsRaw = args.maxWaitMs as number | undefined;
+  const maxWaitMs = typeof maxWaitMsRaw === "number" ? maxWaitMsRaw : timeoutMs;
+  const stream = args.stream === true;
 
   if (!command || typeof command !== "string") {
     return {
@@ -53,35 +68,36 @@ async function executeImpl(
     idleTimeoutMs: Math.min(15_000, timeoutMs),
   });
 
-  const chunks: { stream: string; data: string }[] = [];
-  const unsub = manager.onOutput((chunk) => {
-    if (chunk.sessionId === sessionId) {
-      chunks.push({ stream: chunk.stream, data: chunk.data });
-    }
+  if (waitMode === "detached") {
+    return {
+      sessionId,
+      status: "running",
+      exitCode: null,
+      timedOut: false,
+      done: false,
+      nextSeq: 1,
+      chunks: [],
+    };
+  }
+
+  const follow = await manager.follow(sessionId, {
+    fromSeq: 1,
+    untilExit: waitMode === "until-exit",
+    maxWaitMs,
   });
-
-  const start = Date.now();
-  for (;;) {
-    const info = manager.get(sessionId);
-    if (info?.status !== "running" || Date.now() - start >= timeoutMs) break;
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  unsub();
-
-  const info = manager.get(sessionId);
-  const stdout = chunks.filter((c) => c.stream === "stdout").map((c) => c.data).join("");
-  const stderr = chunks.filter((c) => c.stream === "stderr").map((c) => c.data).join("");
-  const timedOut = info?.status === "running";
-
-  if (timedOut) {
-    await manager.cancel(sessionId);
-  }
+  const timedOut = waitMode === "until-timeout" && !follow.done;
+  if (timedOut) await manager.cancel(sessionId);
+  const stdout = follow.chunks.filter((c) => c.stream === "stdout").map((c) => c.data).join("");
+  const stderr = follow.chunks.filter((c) => c.stream === "stderr").map((c) => c.data).join("");
 
   return {
     sessionId,
-    status: info?.status ?? "unknown",
-    exitCode: info?.exitCode ?? null,
+    status: follow.status,
+    exitCode: follow.exitCode,
     timedOut,
+    done: follow.done,
+    nextSeq: follow.nextSeq,
+    chunks: stream ? follow.chunks : undefined,
     stdout,
     stderr,
     output: stdout + (stderr ? `\n[stderr]\n${stderr}` : ""),
@@ -117,11 +133,49 @@ async function respondImpl(
   }
 }
 
+async function followImpl(
+  args: Record<string, unknown>,
+  manager: ITerminalSessionManager,
+): Promise<unknown> {
+  const sessionId = args.sessionId as string | undefined;
+  if (!sessionId || typeof sessionId !== "string") {
+    return { error: "Missing sessionId. Example: { sessionId: 'uuid', fromSeq?: 1, untilExit?: true, maxWaitMs?: 30000 }" };
+  }
+  const fromSeq = typeof args.fromSeq === "number" ? args.fromSeq : 1;
+  const untilExit = args.untilExit === true;
+  const maxWaitMs = typeof args.maxWaitMs === "number" ? args.maxWaitMs : 30_000;
+  try {
+    return await manager.follow(sessionId, { fromSeq, untilExit, maxWaitMs });
+  } catch (e) {
+    return { error: String(e) };
+  }
+}
+
+async function cancelImpl(
+  args: Record<string, unknown>,
+  manager: ITerminalSessionManager,
+): Promise<unknown> {
+  const sessionId = args.sessionId as string | undefined;
+  if (!sessionId || typeof sessionId !== "string") {
+    return { error: "Missing sessionId. Example: { sessionId: 'uuid' }" };
+  }
+  await manager.cancel(sessionId);
+  const info = manager.get(sessionId);
+  return {
+    ok: true,
+    sessionId,
+    finalStatus: info?.status ?? "killed",
+  };
+}
+
 export const terminalExecuteSchema = {
   type: "object",
   properties: {
     command: { type: "string", description: "Shell command to run (e.g. 'npm run build')" },
     timeoutMs: { type: "number", description: "Max wait in ms (default 60000)" },
+    waitMode: { type: "string", enum: ["until-exit", "until-timeout", "detached"] },
+    maxWaitMs: { type: "number", description: "0 means no proactive timeout" },
+    stream: { type: "boolean", description: "Include chunks array in response" },
     cwd: { type: "string", description: "Working directory" },
   },
   required: ["command"],
@@ -139,4 +193,15 @@ export const terminalRespondSchema = {
     input: { type: "string", description: "Line to send to stdin" },
   },
   required: ["sessionId", "input"],
+} as const;
+
+export const terminalFollowSchema = {
+  type: "object",
+  properties: {
+    sessionId: { type: "string", description: "Terminal session ID" },
+    fromSeq: { type: "number", description: "Read chunks from this sequence (inclusive)" },
+    untilExit: { type: "boolean", description: "Wait until process exits" },
+    maxWaitMs: { type: "number", description: "Max wait time in milliseconds" },
+  },
+  required: ["sessionId"],
 } as const;

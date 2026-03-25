@@ -17,7 +17,11 @@ import type { WebSocket as FayeWebSocket } from "faye-websocket";
 import { parseAuthHandshakeMessage, type ParsedHandshake } from "./authHandshake.js";
 
 /** Handle one JSON-RPC call. Return value is sent as result; throw is sent as error. */
-export type NodeRpcHandler = (method: string, params: unknown) => Promise<unknown>;
+export type NodeRpcHandler = (
+  method: string,
+  params: unknown,
+  context?: { notify: (method: string, params: unknown) => void },
+) => Promise<unknown>;
 
 /** Handle /git/{wikiId}/{pathSuffix}. Optional; if not set, /git/* returns 404. */
 export type NodeGitHandler = (
@@ -248,7 +252,7 @@ export function createNodeServer(
       }
     };
 
-    const runRpc = (
+    const runRpcWithContext = (
       msg: {
         jsonrpc?: string;
         method?: string;
@@ -256,6 +260,9 @@ export function createNodeServer(
         id?: number | null;
       },
     ): void => {
+      const notify = (method: string, params: unknown): void => {
+        sendRpc({ jsonrpc: "2.0", method, params });
+      };
       if (msg.jsonrpc !== "2.0" || !msg.method) {
         sendRpc({
           jsonrpc: "2.0",
@@ -264,7 +271,7 @@ export function createNodeServer(
         });
         return;
       }
-      void rpcHandler(msg.method, msg.params ?? {})
+      void rpcHandler(msg.method, msg.params ?? {}, { notify })
         .then((result) => {
           if (msg.id != null) {
             sendRpc({ jsonrpc: "2.0", id: msg.id, result });
@@ -306,7 +313,7 @@ export function createNodeServer(
       }
 
       if (authState === "authed") {
-        runRpc(msg);
+        runRpcWithContext(msg);
         return;
       }
 
@@ -315,7 +322,7 @@ export function createNodeServer(
       }
 
       if (!wsAuth) {
-        runRpc(msg);
+        runRpcWithContext(msg);
         return;
       }
 

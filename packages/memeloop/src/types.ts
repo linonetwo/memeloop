@@ -124,6 +124,25 @@ export interface TaskAgentRuntimeOptions {
    * 在已配置 `defineTool` / plugins 时，对未被 `onResponseComplete` 处理的 tool 调用回退到 `IToolRegistry`（默认 true）。
    */
   fallbackRegistryTools?: boolean;
+  /**
+   * 工具权限规则（默认 allow）。
+   * 支持 wildcard，如 "terminal.*" / "file.read"。
+   */
+  toolPermissions?: {
+    default?: "allow" | "ask" | "deny";
+    rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+    perAgent?: Record<
+      string,
+      {
+        default?: "allow" | "ask" | "deny";
+        rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+      }
+    >;
+  };
+  /** 相同 tool+input 连续触发阈值（默认 3） */
+  doomLoopThreshold?: number;
+  /** 历史压缩窗口：超过后只保留最近 N 条 + 最后一条用户消息 */
+  contextCompaction?: { maxMessages?: number; replayLastUserMessage?: boolean };
 }
 
 export interface AgentFrameworkContext {

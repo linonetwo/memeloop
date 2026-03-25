@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "pnpm": {
     "overrides": {
-      "better-sqlite3": "^11.10.0"
+      "better-sqlite3": "^12.4.5"
     }
   },
   "description": "MemeLoop open-source monorepo (protocol, core runtime, prompt-editor, node).",

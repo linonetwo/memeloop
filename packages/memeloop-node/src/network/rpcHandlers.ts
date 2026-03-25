@@ -6,6 +6,7 @@ import type { AgentDefinition, ConversationMeta, WikiInfo } from "@memeloop/prot
 
 import type { MemeLoopRuntime } from "memeloop";
 import { resolveQuestionAnswer } from "memeloop";
+import { resolveApproval } from "memeloop";
 import type { IAgentStorage } from "memeloop";
 import type { ITerminalSessionManager } from "../terminal/index.js";
 import type { IWikiManager } from "../knowledge/wikiManager.js";
@@ -41,6 +42,8 @@ export interface RpcHandlerContext {
   agentDefinitions?: AgentDefinition[];
   /** memeloop.file.* 根目录（与 CLI fileBaseDir 一致） */
   fileBaseDir?: string;
+  /** 可选通知发送器（JSON-RPC notification）。 */
+  notify?: (method: string, params: unknown) => void;
 }
 
 export async function handleRpc(
@@ -123,13 +126,33 @@ export async function handleRpc(
     const ok = resolveQuestionAnswer(questionId, answer);
     return { ok };
   }
+  if (method === "memeloop.agent.resolveApproval") {
+    const p = params as { approvalId?: string; decision?: "allow" | "deny" };
+    const approvalId = typeof p?.approvalId === "string" ? p.approvalId.trim() : "";
+    const decision = p?.decision === "allow" ? "allow" : "deny";
+    if (!approvalId) {
+      return { ok: false };
+    }
+    resolveApproval(approvalId, decision);
+    return { ok: true };
+  }
 
   if (terminalManager) {
     if (method === "memeloop.terminal.execute") {
-      const p = params as { command: string; timeoutMs?: number; cwd?: string };
+      const p = params as {
+        command: string;
+        timeoutMs?: number;
+        cwd?: string;
+        waitMode?: "until-exit" | "until-timeout" | "detached";
+        maxWaitMs?: number;
+        stream?: boolean;
+      };
       const command = p.command;
       const timeoutMs = p.timeoutMs ?? 60_000;
       const cwd = p.cwd;
+      const waitMode = p.waitMode ?? "until-timeout";
+      const maxWaitMs = p.maxWaitMs ?? timeoutMs;
+      const stream = p.stream === true;
       const parts = command.trim().split(/\s+/);
       const cmd = parts[0];
       const cmdArgs = parts.slice(1);
@@ -142,33 +165,50 @@ export async function handleRpc(
         idleTimeoutMs: Math.min(15_000, timeoutMs),
       });
 
-      const chunks: { stream: string; data: string }[] = [];
-      const unsub = terminalManager.onOutput((chunk) => {
-        if (chunk.sessionId === sessionId) {
-          chunks.push({ stream: chunk.stream, data: chunk.data });
-        }
-      });
-
-      const startTime = Date.now();
-      for (;;) {
+      if (context.notify) {
+        const unsubOutput = terminalManager.onOutput((chunk) => {
+          if (chunk.sessionId !== sessionId) return;
+          context.notify?.("memeloop.terminal.output.delta", chunk);
+        });
+        const unsubPrompt = terminalManager.onInteractionPrompt((prompt) => {
+          if (prompt.sessionId !== sessionId) return;
+          context.notify?.("memeloop.terminal.interaction.prompt", prompt);
+        });
+        const unsubStatus = terminalManager.onStatusUpdate((status) => {
+          if (status.sessionId !== sessionId) return;
+          context.notify?.("memeloop.terminal.status.update", status);
+          if (status.status !== "running") {
+            unsubOutput();
+            unsubPrompt();
+            unsubStatus();
+          }
+        });
         const info = terminalManager.get(sessionId);
-        if (info?.status !== "running" || Date.now() - startTime >= timeoutMs) break;
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise((r) => setTimeout(r, 200));
+        if (info?.status !== "running") {
+          unsubOutput();
+          unsubPrompt();
+          unsubStatus();
+        }
       }
-      unsub();
-
-      const info = terminalManager.get(sessionId);
-      const stdout = chunks.filter((c) => c.stream === "stdout").map((c) => c.data).join("");
-      const stderr = chunks.filter((c) => c.stream === "stderr").map((c) => c.data).join("");
-      const timedOut = info?.status === "running";
-      if (timedOut) {
-        await terminalManager.cancel(sessionId);
+      if (waitMode === "detached") {
+        return { sessionId, status: "running", exitCode: null, done: false, timedOut: false, nextSeq: 1, chunks: [] };
       }
+      const follow = await terminalManager.follow(sessionId, {
+        fromSeq: 1,
+        untilExit: waitMode === "until-exit",
+        maxWaitMs,
+      });
+      const timedOut = waitMode === "until-timeout" && !follow.done;
+      if (timedOut) await terminalManager.cancel(sessionId);
+      const stdout = follow.chunks.filter((c) => c.stream === "stdout").map((c) => c.data).join("");
+      const stderr = follow.chunks.filter((c) => c.stream === "stderr").map((c) => c.data).join("");
       return {
         sessionId,
-        status: info?.status ?? "unknown",
-        exitCode: info?.exitCode ?? null,
+        status: follow.status,
+        exitCode: follow.exitCode,
+        done: follow.done,
+        nextSeq: follow.nextSeq,
+        chunks: stream ? follow.chunks : [],
         timedOut,
         stdout,
         stderr,
@@ -187,7 +227,16 @@ export async function handleRpc(
     if (method === "memeloop.terminal.cancel") {
       const p = params as { sessionId: string };
       await terminalManager.cancel(p.sessionId);
-      return { ok: true };
+      const info = terminalManager.get(p.sessionId);
+      return { ok: true, sessionId: p.sessionId, finalStatus: info?.status ?? "killed" };
+    }
+    if (method === "memeloop.terminal.follow") {
+      const p = params as { sessionId: string; fromSeq?: number; untilExit?: boolean; maxWaitMs?: number };
+      return terminalManager.follow(p.sessionId, {
+        fromSeq: p.fromSeq ?? 1,
+        untilExit: p.untilExit === true,
+        maxWaitMs: p.maxWaitMs ?? 30_000,
+      });
     }
   }
 

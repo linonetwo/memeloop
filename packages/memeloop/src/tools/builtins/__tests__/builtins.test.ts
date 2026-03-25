@@ -68,6 +68,20 @@ describe("builtin tools", () => {
       expect(registry.registerTool).toHaveBeenCalledWith("remoteAgent", expect.any(Function));
       expect(registry.registerTool).toHaveBeenCalledWith(ASK_QUESTION_TOOL_ID, expect.any(Function));
     });
+
+    it("does not register node-environment tools in core builtins", () => {
+      const registry: IToolRegistry = {
+        registerTool: vi.fn(),
+        getTool: vi.fn(),
+        listTools: vi.fn().mockReturnValue([]),
+      };
+      const context = createMinimalContext();
+      registerBuiltinTools(registry, context);
+      const allCalls = (registry.registerTool as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+      expect(allCalls).not.toContain("terminal.execute");
+      expect(allCalls).not.toContain("file.read");
+      expect(allCalls).not.toContain("knowledge.wikiSearch");
+    });
   });
 
   describe("mcpClientImpl", () => {

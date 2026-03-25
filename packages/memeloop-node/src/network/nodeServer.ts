@@ -33,7 +33,15 @@ export function createNodeServer(options: NodeServerOptions): http.Server {
   const { nodeId, rpcContext, gitProxy, wsAuth, imWebhookHandler } = options;
   return createNodeServerFromMemeloop({
     nodeId,
-    rpcHandler: (method, params) => handleRpc(rpcContext, method, params),
+    rpcHandler: (method, params, wsCtx) =>
+      handleRpc(
+        {
+          ...rpcContext,
+          notify: wsCtx?.notify,
+        },
+        method,
+        params,
+      ),
     gitHandler: gitProxy,
     wsAuth,
     imWebhookHandler,
@@ -47,6 +55,9 @@ export async function startNodeServerWithMdns(
   await new Promise<void>((resolve, reject) => {
     server.listen(options.port, () => resolve()).on("error", reject);
   });
+  if (process.env.NODE_ENV === "test" || process.env.MEMELOOP_DISABLE_MDNS === "1") {
+    return server;
+  }
   try {
     register({
       name: options.serviceName ?? "memeloop-node",

@@ -104,4 +104,45 @@ describe("handleRpc", () => {
     expect(r.capabilities?.hasWiki).toBe(false);
     expect(r.capabilities?.wikis).toEqual([]);
   });
+
+  it("memeloop.terminal.follow proxies terminal manager", async () => {
+    const terminalManager = {
+      follow: vi.fn().mockResolvedValue({
+        sessionId: "s1",
+        status: "running",
+        exitCode: null,
+        nextSeq: 3,
+        done: false,
+        chunks: [{ sessionId: "s1", seq: 2, stream: "stdout", data: "x", ts: Date.now() }],
+      }),
+      start: vi.fn(),
+      list: vi.fn(),
+      get: vi.fn(),
+      respond: vi.fn(),
+      cancel: vi.fn(),
+      onOutput: vi.fn().mockReturnValue(() => {}),
+      onStatusUpdate: vi.fn().mockReturnValue(() => {}),
+      onInteractionPrompt: vi.fn().mockReturnValue(() => {}),
+    };
+    const r = (await handleRpc(
+      mockCtx({ terminalManager: terminalManager as unknown as RpcHandlerContext["terminalManager"] }),
+      "memeloop.terminal.follow",
+      { sessionId: "s1", fromSeq: 2 },
+    )) as { nextSeq?: number };
+    expect(r.nextSeq).toBe(3);
+    expect(terminalManager.follow).toHaveBeenCalledWith("s1", {
+      fromSeq: 2,
+      untilExit: false,
+      maxWaitMs: 30000,
+    });
+  });
+
+  it("memeloop.agent.resolveApproval returns ok", async () => {
+    const r = (await handleRpc(
+      mockCtx(),
+      "memeloop.agent.resolveApproval",
+      { approvalId: "a1", decision: "allow" },
+    )) as { ok?: boolean };
+    expect(r.ok).toBe(true);
+  });
 });

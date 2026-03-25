@@ -26,6 +26,7 @@ import { registerTerminalTools } from "../tools/terminal";
 import { registerFileTools } from "../tools/fileSystem";
 import { registerWikiTools } from "../tools/wikiTools";
 import { registerVscodeTools } from "../tools/vscodeCli";
+import { registerGenericNodeTools } from "../tools/genericNodeTools";
 import { FileWikiManager, type IWikiManager } from "../knowledge/wikiManager";
 import { createPeerRpcSyncTransport } from "../network/rpcSyncTransport";
 import type { AgentDefinition } from "@memeloop/protocol";
@@ -199,6 +200,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     });
   }
   registerVscodeTools(toolRegistry);
+  registerGenericNodeTools(toolRegistry);
 
   const runtime = createMemeLoopRuntime(context);
 

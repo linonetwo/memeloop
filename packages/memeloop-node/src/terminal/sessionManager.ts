@@ -11,6 +11,7 @@ import type {
   TerminalSessionInfo,
   TerminalSessionStatus,
   TerminalOutputChunk,
+  TerminalFollowResult,
   TerminalInteractionPrompt,
 } from "./types.js";
 
@@ -31,7 +32,12 @@ export interface ITerminalSessionManager {
   get(sessionId: string): TerminalSessionInfo | undefined;
   respond(sessionId: string, input: string): Promise<void>;
   cancel(sessionId: string): Promise<void>;
+  follow(
+    sessionId: string,
+    options?: { fromSeq?: number; untilExit?: boolean; maxWaitMs?: number },
+  ): Promise<TerminalFollowResult>;
   onOutput(listener: (chunk: TerminalOutputChunk) => void): () => void;
+  onStatusUpdate(listener: (update: { sessionId: string; status: TerminalSessionStatus; exitCode: number | null; ts: number }) => void): () => void;
   onInteractionPrompt(listener: (prompt: TerminalInteractionPrompt) => void): () => void;
 }
 
@@ -48,12 +54,23 @@ interface SessionState {
   promptPatterns?: { name: string; regex: RegExp }[];
   idleTimeoutMs?: number;
   buffer: string;
+  chunks: TerminalOutputChunk[];
+  nextSeq: number;
 }
 
 export class TerminalSessionManager extends EventEmitter implements ITerminalSessionManager {
   private sessions = new Map<string, SessionState>();
   private outputListeners = new Set<(chunk: TerminalOutputChunk) => void>();
+  private statusListeners = new Set<
+    (update: { sessionId: string; status: TerminalSessionStatus; exitCode: number | null; ts: number }) => void
+  >();
   private promptListeners = new Set<(prompt: TerminalInteractionPrompt) => void>();
+  private readonly maxChunksPerSession: number;
+
+  constructor(options?: { maxChunksPerSession?: number }) {
+    super();
+    this.maxChunksPerSession = Math.max(2000, options?.maxChunksPerSession ?? 4000);
+  }
 
   async start(options: StartSessionOptions): Promise<{ sessionId: string }> {
     const sessionId = crypto.randomUUID();
@@ -79,6 +96,8 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
       promptPatterns: options.promptPatterns,
       idleTimeoutMs: options.idleTimeoutMs,
       buffer: "",
+      chunks: [],
+      nextSeq: 1,
     };
     this.sessions.set(sessionId, state);
 
@@ -98,10 +117,14 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
       s.exitCode = code;
       s.exitedAt = Date.now();
       if (s.idleTimer) clearTimeout(s.idleTimer);
+      this.emitStatusUpdate(sessionId, s.status, s.exitCode);
     });
     proc.on("error", () => {
       const s = this.sessions.get(sessionId);
-      if (s) s.status = "exited";
+      if (s) {
+        s.status = "failed";
+        this.emitStatusUpdate(sessionId, s.status, s.exitCode);
+      }
     });
 
     if (options.idleTimeoutMs) {
@@ -117,8 +140,13 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
     text: string,
     state: SessionState,
   ): void {
-    const timestamp = Date.now();
-    const chunk: TerminalOutputChunk = { sessionId, stream, data: text, timestamp };
+    const seq = state.nextSeq++;
+    const ts = Date.now();
+    const chunk: TerminalOutputChunk = { sessionId, seq, stream, data: text, ts };
+    state.chunks.push(chunk);
+    if (state.chunks.length > this.maxChunksPerSession) {
+      state.chunks.splice(0, state.chunks.length - this.maxChunksPerSession);
+    }
     for (const fn of this.outputListeners) fn(chunk);
 
     if (state.idleTimer) {
@@ -134,7 +162,7 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
             sessionId,
             promptText: state.buffer.slice(-200),
             patternName: name,
-            timestamp,
+            timestamp: ts,
           };
           for (const fn of this.promptListeners) fn(prompt);
           state.buffer = "";
@@ -201,6 +229,39 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
     s.process.kill("SIGTERM");
     s.status = "killed";
     s.exitedAt = Date.now();
+    this.emitStatusUpdate(sessionId, s.status, s.exitCode);
+  }
+
+  async follow(
+    sessionId: string,
+    options?: { fromSeq?: number; untilExit?: boolean; maxWaitMs?: number },
+  ): Promise<TerminalFollowResult> {
+    const fromSeq = Math.max(1, options?.fromSeq ?? 1);
+    const untilExit = options?.untilExit === true;
+    const maxWaitMs = options?.maxWaitMs ?? 30_000;
+    const maxUntil = maxWaitMs > 0 ? Date.now() + maxWaitMs : Number.POSITIVE_INFINITY;
+
+    while (true) {
+      const state = this.sessions.get(sessionId);
+      if (!state) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
+
+      const chunks = state.chunks.filter((chunk) => chunk.seq >= fromSeq);
+      const done = state.status !== "running";
+      if (!untilExit || done || chunks.length > 0 || Date.now() >= maxUntil) {
+        return {
+          sessionId,
+          status: state.status,
+          exitCode: state.exitCode,
+          nextSeq: state.nextSeq,
+          done,
+          chunks,
+        };
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
   }
 
   onOutput(listener: (chunk: TerminalOutputChunk) => void): () => void {
@@ -208,8 +269,20 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
     return () => this.outputListeners.delete(listener);
   }
 
+  onStatusUpdate(
+    listener: (update: { sessionId: string; status: TerminalSessionStatus; exitCode: number | null; ts: number }) => void,
+  ): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
   onInteractionPrompt(listener: (prompt: TerminalInteractionPrompt) => void): () => void {
     this.promptListeners.add(listener);
     return () => this.promptListeners.delete(listener);
+  }
+
+  private emitStatusUpdate(sessionId: string, status: TerminalSessionStatus, exitCode: number | null): void {
+    const payload = { sessionId, status, exitCode, ts: Date.now() };
+    for (const fn of this.statusListeners) fn(payload);
   }
 }

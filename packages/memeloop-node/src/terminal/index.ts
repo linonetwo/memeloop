@@ -4,5 +4,6 @@ export type {
   TerminalSessionInfo,
   TerminalSessionStatus,
   TerminalOutputChunk,
+  TerminalFollowResult,
   TerminalInteractionPrompt,
 } from "./types.js";

@@ -211,5 +211,89 @@ describe("createTaskAgent", () => {
     expect(messageSteps.map((s) => s.data)).toEqual(["a", "b"]);
     expect(storage.appendMessage).toHaveBeenCalled();
   });
+
+  it("applies tool permission deny by wildcard", async () => {
+    const messageLog: import("@memeloop/protocol").ChatMessage[] = [];
+    const llmProvider: ILLMProvider = {
+      name: "mock",
+      async *chat() {
+        yield '<tool_use name="terminal.execute">{"command":"echo hi"}</tool_use>';
+      },
+    };
+    const storage: IAgentStorage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockImplementation(async () => [...messageLog]),
+      appendMessage: vi.fn().mockImplementation(async (m) => {
+        messageLog.push(m);
+      }),
+      upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockResolvedValue(null),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockResolvedValue(null),
+    };
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn().mockReturnValue(async () => ({ result: "should-not-run" })),
+      listTools: vi.fn().mockReturnValue(["terminal.execute"]),
+    };
+    const context: AgentFrameworkContext = {
+      storage,
+      llmProvider,
+      tools,
+      syncAdapters: [],
+      network: { start: vi.fn().mockResolvedValue(undefined), stop: vi.fn().mockResolvedValue(undefined) },
+      taskAgent: { maxIterations: 2, toolPermissions: { rules: [{ pattern: "terminal.*", action: "deny" }] } },
+    };
+    const agent = createTaskAgent(context);
+    for await (const _step of agent({ conversationId: "deny:1", message: "go" })) {
+      // consume
+    }
+    expect(tools.getTool).not.toHaveBeenCalled();
+  });
+
+  it("applies tool permission deny in parallel calls", async () => {
+    const messageLog: import("@memeloop/protocol").ChatMessage[] = [];
+    const llmProvider: ILLMProvider = {
+      name: "mock",
+      async *chat() {
+        yield '<function_calls parallel="true"><tool_use name="terminal.execute">{"command":"echo a"}</tool_use><tool_use name="terminal.execute">{"command":"echo b"}</tool_use></function_calls>';
+      },
+    };
+    const storage: IAgentStorage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockImplementation(async () => [...messageLog]),
+      appendMessage: vi.fn().mockImplementation(async (m) => {
+        messageLog.push(m);
+      }),
+      upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockResolvedValue(null),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockResolvedValue(null),
+    };
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn().mockReturnValue(async () => ({ result: "should-not-run" })),
+      listTools: vi.fn().mockReturnValue(["terminal.execute"]),
+    };
+    const context: AgentFrameworkContext = {
+      storage,
+      llmProvider,
+      tools,
+      syncAdapters: [],
+      network: { start: vi.fn().mockResolvedValue(undefined), stop: vi.fn().mockResolvedValue(undefined) },
+      taskAgent: { maxIterations: 2, toolPermissions: { rules: [{ pattern: "terminal.*", action: "deny" }] } },
+    };
+    const agent = createTaskAgent(context);
+    for await (const _step of agent({ conversationId: "deny:parallel", message: "go" })) {
+      // consume
+    }
+    expect(tools.getTool).not.toHaveBeenCalled();
+  });
 });
 

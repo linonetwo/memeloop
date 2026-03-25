@@ -7,6 +7,7 @@ import { responseConcat } from "../prompt/responseConcat.js";
 import type { AgentFrameworkContext } from "../types.js";
 import { nextLamportClockForConversation } from "../storage/nextLamport.js";
 import { createHooksWithPlugins, resolvePromptPluginMap, runResponseCompleteHooks } from "../tools/pluginRegistry.js";
+import { requestApproval } from "../tools/approval.js";
 import type { DefineToolAgentFrameworkContext } from "../tools/types.js";
 import { agentInstanceMessageToChatMessage, chatMessagesToAgentMessages } from "./agentMessageBridge.js";
 
@@ -20,6 +21,46 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
 }
 
 type LlmRequestMessage = { role: "system" | "user" | "assistant" | "tool"; content: unknown };
+type ToolPermissionAction = "allow" | "ask" | "deny";
+
+function wildcardMatch(pattern: string, value: string): boolean {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${escaped}$`).test(value);
+}
+
+function resolveToolPermission(
+  opts: AgentFrameworkContext["taskAgent"],
+  definitionId: string,
+  toolId: string,
+): ToolPermissionAction {
+  const global = opts?.toolPermissions;
+  const scoped = global?.perAgent?.[definitionId];
+  const rules = [...(scoped?.rules ?? []), ...(global?.rules ?? [])];
+  for (const rule of rules) {
+    if (wildcardMatch(rule.pattern, toolId)) {
+      return rule.action;
+    }
+  }
+  return scoped?.default ?? global?.default ?? "allow";
+}
+
+function compactHistory(history: ChatMessage[], opts: AgentFrameworkContext["taskAgent"]): ChatMessage[] {
+  const maxMessages = opts?.contextCompaction?.maxMessages ?? 0;
+  if (maxMessages <= 0 || history.length <= maxMessages) return history;
+  const dropped = history.length - maxMessages;
+  const tail = history.slice(-maxMessages);
+  const summaryMessage: ChatMessage = {
+    ...(tail[0] as ChatMessage),
+    messageId: `${tail[0]?.conversationId ?? "unknown"}:summary:${Date.now().toString(36)}`,
+    role: "assistant",
+    content: `[context-summary] ${dropped} earlier messages were compacted.`,
+  };
+  if (opts?.contextCompaction?.replayLastUserMessage === false) return tail;
+  const lastUser = [...history].reverse().find((m) => m.role === "user");
+  if (!lastUser) return [summaryMessage, ...tail];
+  if (tail.some((m) => m.messageId === lastUser.messageId)) return tail;
+  return [summaryMessage, lastUser, ...tail];
+}
 
 function chunkToText(chunk: unknown): string {
   if (typeof chunk === "string") return chunk;
@@ -227,6 +268,7 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
     await context.storage.appendMessage(userMessage);
 
     let iteration = 0;
+    const recentToolCalls: string[] = [];
 
     while (iteration < maxIterations) {
       iteration++;
@@ -236,7 +278,8 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
         return;
       }
 
-      const history = await context.storage.getMessages(input.conversationId, { mode: "full-content" });
+      const rawHistory = await context.storage.getMessages(input.conversationId, { mode: "full-content" });
+      const history = compactHistory(rawHistory, opts);
       const agentMessages = chatMessagesToAgentMessages(input.conversationId, history);
 
       const hookCtx: DefineToolAgentFrameworkContext = {
@@ -351,8 +394,42 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
         continue;
       }
 
-      const execOne = async (call: (typeof pending)[0]) => {
-        const { text, isError } = await executeRegistryTool(context, call.toolId, call.parameters);
+      const executeWithGuards = async (
+        call: (typeof pending)[0],
+      ): Promise<{ text: string; isError: boolean }> => {
+        const signature = `${call.toolId}:${JSON.stringify(call.parameters)}`;
+        recentToolCalls.push(signature);
+        const threshold = Math.max(2, opts.doomLoopThreshold ?? 3);
+        const last = recentToolCalls.slice(-threshold);
+        if (last.length === threshold && last.every((x) => x === signature)) {
+          return { text: "Blocked by doom-loop guard", isError: true };
+        }
+        const permission = resolveToolPermission(opts, definitionId, call.toolId);
+        if (permission === "deny") {
+          return { text: "Denied by tool permission", isError: true };
+        }
+        if (permission === "ask") {
+          const decision = await requestApproval(
+            {
+              approvalId: `${input.conversationId}:${Date.now().toString(36)}:${call.toolId}`,
+              agentId: input.conversationId,
+              toolName: call.toolId,
+              parameters: call.parameters,
+              created: new Date(),
+            },
+            60_000,
+          );
+          if (decision !== "allow") {
+            return { text: "Tool approval denied or timed out", isError: true };
+          }
+        }
+        return executeRegistryTool(context, call.toolId, call.parameters);
+      };
+
+      const persistToolResult = async (
+        call: (typeof pending)[0],
+        row: { text: string; isError: boolean },
+      ): Promise<void> => {
         const lamportTool = await nextLamportClockForConversation(context.storage, input.conversationId);
         await context.storage.appendMessage({
           messageId: `${input.conversationId}:t:${call.toolId}:${Date.now().toString(36)}`,
@@ -361,13 +438,13 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
           timestamp: Date.now(),
           lamportClock: lamportTool,
           role: "tool",
-          content: formatToolResultMessage(call.toolId, call.parameters, text, isError),
+          content: formatToolResultMessage(call.toolId, call.parameters, row.text, row.isError),
         });
       };
 
       if (parallel) {
         const results = await Promise.all(
-          pending.map(async (call) => ({ call, ...(await executeRegistryTool(context, call.toolId, call.parameters)) })),
+          pending.map(async (call) => ({ call, ...(await executeWithGuards(call)) })),
         );
         for (const row of results) {
           yield {
@@ -376,16 +453,7 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
           };
         }
         for (const row of results) {
-          const lamportTool = await nextLamportClockForConversation(context.storage, input.conversationId);
-          await context.storage.appendMessage({
-            messageId: `${input.conversationId}:t:${row.call.toolId}:${Date.now().toString(36)}`,
-            conversationId: input.conversationId,
-            originNodeId: "local",
-            timestamp: Date.now(),
-            lamportClock: lamportTool,
-            role: "tool",
-            content: formatToolResultMessage(row.call.toolId, row.call.parameters, row.text, row.isError),
-          });
+          await persistToolResult(row.call, { text: row.text, isError: row.isError });
         }
       } else {
         for (const call of pending) {
@@ -393,7 +461,8 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
             type: "tool",
             data: { toolId: call.toolId, parameters: call.parameters, parallel: false },
           };
-          await execOne(call);
+          const row = await executeWithGuards(call);
+          await persistToolResult(call, row);
         }
       }
 
