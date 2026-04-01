@@ -8,7 +8,7 @@ import type { IMChannelManager } from "./channelManager.js";
 export const imToolDefinitions = [
   {
     name: "im.listConversations",
-    description: "列出可切换的会话（占位：需接入存储层后返回真实列表）",
+    description: "列出可切换的会话（由 memeloop-node registerImSessionTools 注册，仅 IM 来源会话可用）。",
   },
   {
     name: "im.switchConversation",
@@ -16,11 +16,11 @@ export const imToolDefinitions = [
   },
   {
     name: "im.newConversation",
-    description: "创建新会话并切换绑定。参数：{ definitionId?: string, initialMessage?: string }",
+    description: "创建新会话并切换绑定。参数：{ definitionId?: string }",
   },
   {
     name: "im.summarizeHistory",
-    description: "摘要当前会话历史（占位：需 LLM 调用）",
+    description: "返回当前会话最近消息的纯文本摘要（规则拼接，非 LLM）。参数：{ maxMessages?: number }",
   },
 ] as const;
 

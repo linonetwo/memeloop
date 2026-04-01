@@ -15,13 +15,24 @@ import { gitProxyTargetBlockReason } from "./gitProxyUrlPolicy.js";
 import type { WebSocket as FayeWebSocket } from "faye-websocket";
 
 import { parseAuthHandshakeMessage, type ParsedHandshake } from "./authHandshake.js";
+import {
+  createNoiseXxResponder,
+  getNoiseXxPeerCryptoMaterial,
+  MEMELOOP_NOISE_PROLOGUE_V1,
+  type NoiseStaticKeyPair,
+  type NoiseXxHandshakePeer,
+} from "./noiseXxHandshake.js";
+import { NoiseJsonRpcCodec } from "./noiseTransport.js";
+
+/** Per-WebSocket 连接上下文：JSON-RPC handler 第三参数。 */
+export type NodeRpcContext = {
+  notify: (method: string, params: unknown) => void;
+  /** LAN PIN 确认失败计数；由 createNodeServer 每连接创建，供 memeloop.auth.confirmPin 限速。 */
+  pinConfirmState?: { consecutiveFails: number; lockedUntil: number };
+};
 
 /** Handle one JSON-RPC call. Return value is sent as result; throw is sent as error. */
-export type NodeRpcHandler = (
-  method: string,
-  params: unknown,
-  context?: { notify: (method: string, params: unknown) => void },
-) => Promise<unknown>;
+export type NodeRpcHandler = (method: string, params: unknown, context?: NodeRpcContext) => Promise<unknown>;
 
 /** Handle /git/{wikiId}/{pathSuffix}. Optional; if not set, /git/* returns 404. */
 export type NodeGitHandler = (
@@ -66,6 +77,23 @@ export interface CreateNodeServerOptions {
   wsAuth?: WsAuthOptions;
   /** 若设置，则提供 IM 平台直连 Webhook 端点。 */
   imWebhookHandler?: ImWebhookHandler;
+  /**
+   * 启用后：先交换 3 条 **binary** Noise_XX 消息，再对 JSON-RPC 做 ChaCha20-Poly1305 帧加密（§7.5.5）。
+   * 未设置时保持明文 WebSocket 帧（兼容旧客户端与 Mock 单测）。
+   */
+  noise?: {
+    staticKeyPair: NoiseStaticKeyPair;
+    /** 默认 {@link MEMELOOP_NOISE_PROLOGUE_V1} */
+    prologue?: Buffer;
+  };
+}
+
+type WebSocketImpl = typeof FayeWebSocket & { isWebSocket(req: IncomingMessage): boolean };
+let testWebSocketImpl: WebSocketImpl | null = null;
+
+/** Test-only seam: inject WebSocket implementation for deterministic handshake tests. */
+export function __setWebSocketImplForTest(impl: WebSocketImpl | null): void {
+  testWebSocketImpl = impl;
 }
 
 /** Build git handler from getBackendUrl + verifyAuth (HTTP reverse proxy). Used by memeloop-node. */
@@ -152,12 +180,14 @@ function resolveGitHandler(
 export function createNodeServer(
   options: CreateNodeServerOptions,
 ): http.Server {
-  const { nodeId, rpcHandler, wsAuth, imWebhookHandler } = options;
+  const { nodeId, rpcHandler, wsAuth, imWebhookHandler, noise: noiseOpt } = options;
   const gitHandler = resolveGitHandler(options.gitHandler);
   // Lazy-load faye-websocket so this module can be imported in environments
   // that don't have the package installed (e.g. the main Electron process bundle).
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { WebSocket } = require("faye-websocket") as { WebSocket: typeof FayeWebSocket & { isWebSocket(req: IncomingMessage): boolean } };
+  const WebSocket: WebSocketImpl =
+    testWebSocketImpl ??
+    (require("faye-websocket") as { WebSocket: WebSocketImpl }).WebSocket;
 
   const server = http.createServer((req, res) => {
     const url = req.url ?? "/";
@@ -238,19 +268,43 @@ export function createNodeServer(
       return;
     }
     const ws = new WebSocket(request, socket, head);
-    /** 无 wsAuth 时等同已认证；有 wsAuth 时经 handshake 后为 authed。 */
-    type WsAuthState = "awaiting_handshake" | "pending_verify" | "authed" | "rejected";
-    let authState: WsAuthState = wsAuth ? "awaiting_handshake" : "authed";
+    const noisePrologue = noiseOpt?.prologue ?? MEMELOOP_NOISE_PROLOGUE_V1;
+    let noiseCodec: NoiseJsonRpcCodec | null = null;
+    let noiseAwait: "msg1" | "msg3" | null = noiseOpt ? "msg1" : null;
+    let noisePeer: NoiseXxHandshakePeer | null = null;
+
+    /** 无 wsAuth 时等同已认证；有 wsAuth 时经 handshake 后为 authed；有 Noise 时先 awaiting_noise。 */
+    type WsAuthState =
+      | "awaiting_noise"
+      | "awaiting_handshake"
+      | "pending_verify"
+      | "authed"
+      | "rejected";
+    let authState: WsAuthState = noiseOpt
+      ? "awaiting_noise"
+      : wsAuth
+        ? "awaiting_handshake"
+        : "authed";
     /** 异步校验期间到达的消息，认证成功后按序处理（避免 verify 完成前误拒后续 RPC）。 */
     const pendingWhileVerifying: string[] = [];
 
-    const sendRpc = (payload: Record<string, unknown>): void => {
+    const sendWire = (text: string): void => {
       try {
-        ws.send(JSON.stringify(payload));
+        if (noiseCodec) {
+          ws.send(noiseCodec.encrypt(text));
+        } else {
+          ws.send(text);
+        }
       } catch {
         /* ignore */
       }
     };
+
+    const sendRpc = (payload: Record<string, unknown>): void => {
+      sendWire(JSON.stringify(payload));
+    };
+
+    const pinConfirmState = { consecutiveFails: 0, lockedUntil: 0 };
 
     const runRpcWithContext = (
       msg: {
@@ -271,7 +325,7 @@ export function createNodeServer(
         });
         return;
       }
-      void rpcHandler(msg.method, msg.params ?? {}, { notify })
+      void rpcHandler(msg.method, msg.params ?? {}, { notify, pinConfirmState })
         .then((result) => {
           if (msg.id != null) {
             sendRpc({ jsonrpc: "2.0", id: msg.id, result });
@@ -309,6 +363,10 @@ export function createNodeServer(
           error: { code: -32700, message: "Parse error" },
           id: null,
         });
+        return;
+      }
+
+      if (authState === "awaiting_noise") {
         return;
       }
 
@@ -430,12 +488,105 @@ export function createNodeServer(
     };
 
     ws.onmessage = (event: { data: string | Buffer | ArrayBuffer }) => {
+      const data = event.data;
+
+      if (noiseAwait !== null) {
+        if (typeof data === "string") {
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+        if (noiseAwait === "msg1") {
+          void (async () => {
+            try {
+              if (!noiseOpt) return;
+              noisePeer = await createNoiseXxResponder(noiseOpt.staticKeyPair, noisePrologue);
+              noisePeer.recv(buf);
+              ws.send(noisePeer.send());
+              noiseAwait = "msg3";
+            } catch {
+              try {
+                ws.close();
+              } catch {
+                /* ignore */
+              }
+            }
+          })();
+          return;
+        }
+        if (noiseAwait === "msg3") {
+          void (async () => {
+            try {
+              if (!noisePeer) {
+                try {
+                  ws.close();
+                } catch {
+                  /* ignore */
+                }
+                return;
+              }
+              noisePeer.recv(buf);
+              if (!noisePeer.complete) {
+                try {
+                  ws.close();
+                } catch {
+                  /* ignore */
+                }
+                return;
+              }
+              const mat = getNoiseXxPeerCryptoMaterial(noisePeer);
+              noiseCodec = new NoiseJsonRpcCodec(mat.sendKey, mat.recvKey);
+              noiseAwait = null;
+              noisePeer = null;
+              authState = wsAuth ? "awaiting_handshake" : "authed";
+              flushPendingQueue();
+            } catch {
+              try {
+                ws.close();
+              } catch {
+                /* ignore */
+              }
+            }
+          })();
+          return;
+        }
+      }
+
+      if (noiseCodec) {
+        if (typeof data === "string") {
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+        let text: string;
+        try {
+          text = noiseCodec.decrypt(buf);
+        } catch {
+          sendRpc({
+            jsonrpc: "2.0",
+            error: { code: -32700, message: "noise: decrypt failed" },
+            id: null,
+          });
+          return;
+        }
+        dispatchRawMessage(text);
+        return;
+      }
+
       const raw =
-        typeof event.data === "string"
-          ? event.data
-          : Buffer.isBuffer(event.data)
-            ? event.data.toString()
-            : String(event.data);
+        typeof data === "string"
+          ? data
+          : Buffer.isBuffer(data)
+            ? data.toString()
+            : String(data);
       dispatchRawMessage(raw);
     };
   });

@@ -71,6 +71,7 @@ export interface ImChannelBindingRecord {
   imUserId: string;
   activeConversationId: string;
   defaultDefinitionId?: string;
+  pendingQuestionId?: string;
 }
 
 export interface MemeLoopLogger {
@@ -143,6 +144,14 @@ export interface TaskAgentRuntimeOptions {
   doomLoopThreshold?: number;
   /** 历史压缩窗口：超过后只保留最近 N 条 + 最后一条用户消息 */
   contextCompaction?: { maxMessages?: number; replayLastUserMessage?: boolean };
+  /**
+   * After a tool returns `__memeloopToolResult.awaitSessionId`, TaskAgent waits here before the next LLM round
+   * (terminal `mode: 'await'`).
+   */
+  waitForTerminalSession?: (sessionId: string) => Promise<{
+    exitCode: number | null;
+    truncatedOutput: string;
+  }>;
 }
 
 export interface AgentFrameworkContext {

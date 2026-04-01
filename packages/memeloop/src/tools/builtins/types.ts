@@ -9,6 +9,12 @@ import type { TaskAgentGenerator, TaskAgentInput } from "../../framework/taskAge
  */
 export interface BuiltinToolContext extends AgentFrameworkContext {
   /**
+   * 当前工具执行时对应的 conversationId（由宿主/运行时注入）。
+   * IM 会话工具依赖该值定位会话来源；缺失时工具返回错误而不是抛异常。
+   */
+  activeToolConversationId?: string;
+
+  /**
    * Run the local task agent (for spawnAgent). If not provided, spawnAgent tool will return an error.
    */
   runLocalAgent?(input: TaskAgentInput): TaskAgentGenerator;
@@ -38,8 +44,18 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
    */
   remoteAgentStreamTimeoutMs?: number;
 
+  /** 本节点 ID（用于 `spawnAgent` / `remoteAgent` 的 `detailRef.nodeId`）。未设时 spawn 使用 `"local"`。 */
+  localNodeId?: string;
+
   /** `askQuestion` 阻塞前回调（可将 questionId 推送到 IM / UI，供 `resolveQuestion` RPC 回填）。 */
-  notifyAskQuestion?(payload: { questionId: string; question: string; conversationId: string }): void;
+  notifyAskQuestion?(payload: {
+    questionId: string;
+    question: string;
+    conversationId?: string;
+    inputType?: "single-select" | "multi-select" | "text";
+    options?: Array<{ label: string; description?: string }>;
+    allowFreeform?: boolean;
+  }): void;
 }
 
 /** Tool implementation: (args, context) => result. Context is bound at registration time. */

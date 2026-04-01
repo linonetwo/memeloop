@@ -8,6 +8,22 @@ export interface ToolCall {
   arguments: unknown;
 }
 
+/** Points to large tool output stored elsewhere (sub-agent log, terminal session, file). */
+export type DetailRefType = "sub-agent" | "terminal-session" | "file";
+
+export interface DetailRef {
+  type: DetailRefType;
+  /** Sub-agent / spawn / remote conversation id */
+  conversationId?: string;
+  /** Terminal session id (often paired with `terminal:<sessionId>` conversation) */
+  sessionId?: string;
+  /** Node that holds the detail payload */
+  nodeId?: string;
+  /** e.g. `memeloop://node/.../file/...` from `buildMemeloopFileUri` in `./uri.js` */
+  fileUri?: string;
+  exitCode?: number;
+}
+
 export interface ChatMessage {
   messageId: string;
   conversationId: string;
@@ -18,5 +34,7 @@ export interface ChatMessage {
   content: string;
   toolCalls?: ToolCall[];
   attachments?: AttachmentRef[];
+  /** Summary lives in `content`; full payload fetched via detail ref (plan §5.2.1). */
+  detailRef?: DetailRef;
 }
 

@@ -7,5 +7,6 @@ export * from "./toolRegistry.js";
 export * from "./approval.js";
 export * from "./schemaToToolContent.js";
 export * from "./parallelExecution.js";
+export * from "./structuredToolResult.js";
 export * from "./builtins/index.js";
 

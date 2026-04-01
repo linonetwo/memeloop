@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 
 import type { ChatMessage } from "@memeloop/protocol";
-import type { WsAuthOptions } from "memeloop";
+import type { NoiseStaticKeyPair, WsAuthOptions } from "memeloop";
+import { generateX25519KeyPairForNoise } from "memeloop";
 
 import type { NodeConfig } from "../config";
 import { createNodeRuntime } from "../runtime/index";
@@ -16,6 +17,8 @@ export interface StartedTestNode {
   server: http.Server;
   port: number;
   nodeId: string;
+  /** 与本节点 WS 服务端 Noise 静态密钥一致；出站连接时作 initiator 使用。 */
+  noiseStaticKeyPair: NoiseStaticKeyPair;
   /** Register an extra tool on this node (e.g. Cucumber / integration tests). */
   registerTool(id: string, impl: (args: Record<string, unknown>) => unknown | Promise<unknown>): void;
   /** Read persisted messages for a conversation (TaskAgent + runtime). */
@@ -54,6 +57,8 @@ export async function startTestNode(
       wikiBasePath: options?.wikiBasePath,
       localNodeId: nodeId,
     });
+  const noiseStaticKeyPair = await generateX25519KeyPairForNoise();
+
   const rpcContext: RpcHandlerContext = {
     runtime,
     storage,
@@ -72,6 +77,7 @@ export async function startTestNode(
     rpcContext,
     serviceName: nodeId,
     wsAuth: options?.wsAuth,
+    noise: { staticKeyPair: noiseStaticKeyPair },
   });
 
   const address = server.address();
@@ -83,6 +89,7 @@ export async function startTestNode(
     server,
     port: address.port,
     nodeId,
+    noiseStaticKeyPair,
     registerTool(id: string, impl: (args: Record<string, unknown>) => unknown | Promise<unknown>) {
       toolRegistry.registerTool(id, impl);
     },

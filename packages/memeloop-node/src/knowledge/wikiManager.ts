@@ -10,8 +10,8 @@ import path from "node:path";
 import type { AgentDefinition } from "@memeloop/protocol";
 import type { ITiddlerFields } from "tiddlywiki";
 
-import type { AgentDefinitionYaml } from "../config.js";
-import { normalizeAgentDefinition } from "../config.js";
+import type { AgentDefinitionYaml } from "../config";
+import { normalizeAgentDefinition } from "../config";
 
 export type TiddlerFields = ITiddlerFields;
 
@@ -39,17 +39,19 @@ type TiddlyWikiInstance = {
   boot: { argv: string[]; boot: (cb?: (err?: Error) => void) => void };
 };
 
-function loadTiddlyWikiBoot(): { TiddlyWiki: () => TiddlyWikiInstance } {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require("tiddlywiki") as { TiddlyWiki: () => TiddlyWikiInstance };
+async function loadTiddlyWikiBoot(): Promise<{ TiddlyWiki: () => TiddlyWikiInstance }> {
+  // Use dynamic import so vitest can mock `tiddlywiki` in unit tests.
+  const mod = (await import("tiddlywiki")) as unknown as { default?: { TiddlyWiki: () => TiddlyWikiInstance } };
+  const resolved = (mod as any).default ?? mod;
+  return resolved as { TiddlyWiki: () => TiddlyWikiInstance };
 }
 
-function bootWiki(wikiPath: string): Promise<TiddlyWikiInstance> {
+async function bootWiki(wikiPath: string): Promise<TiddlyWikiInstance> {
   const absolutePath = path.resolve(wikiPath);
   if (!fs.existsSync(absolutePath)) {
     return Promise.reject(new Error(`Wiki path does not exist: ${absolutePath}`));
   }
-  const boot = loadTiddlyWikiBoot();
+  const boot = await loadTiddlyWikiBoot();
   const $tw = boot.TiddlyWiki();
   $tw.boot.argv = [absolutePath, "--load"];
   return new Promise((resolve, reject) => {

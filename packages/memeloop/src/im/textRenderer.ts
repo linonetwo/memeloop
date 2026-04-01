@@ -6,15 +6,33 @@ export class TextMessageRenderer implements IIMMessageRenderer {
     return content.trim();
   }
 
-  renderToolCall(toolName: string, args: unknown): string {
-    return `🔧 工具调用：${toolName}\n\`\`\`json\n${JSON.stringify(args, null, 2)}\n\`\`\``;
+  renderToolCallSummary(toolName: string, args: unknown): string {
+    const s = (() => {
+      try {
+        const j = JSON.stringify(args);
+        if (!j || j === "{}") return "";
+        return j.length > 120 ? `${j.slice(0, 117)}…` : j;
+      } catch {
+        return "";
+      }
+    })();
+    return s ? `🔧 ${toolName}: ${s}` : `🔧 ${toolName}`;
   }
 
-  renderToolResult(toolName: string, result: unknown): string {
-    const s =
-      typeof result === "string" ? result : JSON.stringify(result, null, 2);
-    const clipped = s.length > 3500 ? `${s.slice(0, 3500)}\n…(截断)` : s;
-    return `✅ 工具结果：${toolName}\n\`\`\`\n${clipped}\n\`\`\``;
+  renderToolResultSummary(toolName: string, result: unknown): string | null {
+    // IM 默认隐藏工具结果细节：只给一个轻量摘要，避免刷屏。
+    if (result == null) return `✅ ${toolName}: done`;
+    if (typeof result === "string") {
+      const t = result.trim();
+      if (!t) return `✅ ${toolName}: done`;
+      return `✅ ${toolName}: ${t.length > 120 ? `${t.slice(0, 117)}…` : t}`;
+    }
+    if (typeof result === "object") {
+      const keys = Object.keys(result as Record<string, unknown>);
+      if (keys.length === 0) return `✅ ${toolName}: done`;
+      return `✅ ${toolName}: {${keys.slice(0, 6).join(", ")}${keys.length > 6 ? ", …" : ""}}`;
+    }
+    return `✅ ${toolName}: ${String(result)}`;
   }
 
   renderToolApproval(toolName: string, args: unknown): string {
@@ -28,8 +46,8 @@ export class TextMessageRenderer implements IIMMessageRenderer {
     return lines.join("\n");
   }
 
-  renderThinking(content: string): string {
-    return `💭 ${content}`;
+  renderThinking(_content: string): string | null {
+    return null;
   }
 
   renderError(error: string): string {

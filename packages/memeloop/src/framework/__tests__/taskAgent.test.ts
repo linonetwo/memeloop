@@ -9,6 +9,7 @@ import type {
   INetworkService,
   IToolRegistry,
 } from "../../types.js";
+import { MEMELOOP_STRUCTURED_TOOL_KEY } from "../../tools/structuredToolResult.js";
 import { createTaskAgent } from "../taskAgent.js";
 
 describe("createTaskAgent", () => {
@@ -161,6 +162,151 @@ describe("createTaskAgent", () => {
     expect(roles).toContain("assistant");
     expect(roles).toContain("tool");
     expect(round).toBe(2);
+  });
+
+  it("persists detailRef when tool returns structured __memeloopToolResult", async () => {
+    let round = 0;
+    const llmProvider: ILLMProvider = {
+      name: "mock",
+      async *chat() {
+        round += 1;
+        if (round === 1) {
+          yield '<tool_use name="big">{"x":1}</tool_use>';
+        } else {
+          yield "done";
+        }
+      },
+    };
+
+    const messageLog: import("@memeloop/protocol").ChatMessage[] = [];
+    const storage: IAgentStorage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockImplementation(async () => [...messageLog]),
+      appendMessage: vi.fn().mockImplementation(async (m) => {
+        messageLog.push(m);
+      }),
+      upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockResolvedValue(null),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockResolvedValue(null),
+    };
+
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn().mockImplementation((id: string) => {
+        if (id === "big") {
+          return async () => ({
+            [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+              summary: "short summary for model",
+              detailRef: { type: "terminal-session", sessionId: "s1", nodeId: "n1" },
+            },
+          });
+        }
+        return undefined;
+      }),
+      listTools: vi.fn().mockReturnValue(["big"]),
+    };
+
+    const context: AgentFrameworkContext = {
+      storage,
+      llmProvider,
+      tools,
+      syncAdapters: [],
+      network: {
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+      },
+      taskAgent: { maxIterations: 8 },
+    };
+
+    const agent = createTaskAgent(context);
+    for await (const _ of agent({ conversationId: "def:big", message: "go" })) {
+      /* drain */
+    }
+
+    const toolMsg = messageLog.find((m) => m.role === "tool" && m.content.includes("big"));
+    expect(toolMsg?.content).toContain("short summary for model");
+    expect(toolMsg?.detailRef).toEqual({
+      type: "terminal-session",
+      sessionId: "s1",
+      nodeId: "n1",
+    });
+  });
+
+  it("waits for terminal session when tool sets awaitSessionId and waitForTerminalSession is configured", async () => {
+    let round = 0;
+    const llmProvider: ILLMProvider = {
+      name: "mock",
+      async *chat() {
+        round += 1;
+        if (round === 1) {
+          yield '<tool_use name="term">{}</tool_use>';
+        } else {
+          yield "done after await";
+        }
+      },
+    };
+
+    const messageLog: import("@memeloop/protocol").ChatMessage[] = [];
+    const storage: IAgentStorage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockImplementation(async () => [...messageLog]),
+      appendMessage: vi.fn().mockImplementation(async (m) => {
+        messageLog.push(m);
+      }),
+      upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockResolvedValue(null),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockResolvedValue(null),
+    };
+
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn().mockImplementation((id: string) => {
+        if (id === "term") {
+          return async () => ({
+            [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+              summary: "[terminal.await] running",
+              awaitSessionId: "sid-1",
+              detailRef: { type: "terminal-session", sessionId: "sid-1", nodeId: "n1" },
+            },
+          });
+        }
+        return undefined;
+      }),
+      listTools: vi.fn().mockReturnValue(["term"]),
+    };
+
+    const waitForTerminalSession = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      truncatedOutput: "final output",
+    });
+
+    const context: AgentFrameworkContext = {
+      storage,
+      llmProvider,
+      tools,
+      syncAdapters: [],
+      network: {
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+      },
+      taskAgent: { maxIterations: 8, waitForTerminalSession },
+    };
+
+    const agent = createTaskAgent(context);
+    for await (const _ of agent({ conversationId: "def:term", message: "go" })) {
+      /* drain */
+    }
+
+    expect(waitForTerminalSession).toHaveBeenCalledWith("sid-1");
+    expect(messageLog.some((m) => m.role === "tool" && m.content.includes("terminal.await done"))).toBe(true);
   });
 
   it("handles LLM provider that returns a Promise resolving to an AsyncIterable (streaming)", async () => {

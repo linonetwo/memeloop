@@ -4,6 +4,7 @@ import type { AuthChallenge } from "../auth.js";
 import { isJsonRpcRequest, sendJsonRpcMethod } from "../rpc.js";
 import type { RpcMethodMap, RpcParams } from "../rpc.js";
 import { isConversationMeta } from "../sync.js";
+import { buildMemeloopFileUri, parseMemeloopUri } from "../uri.js";
 
 describe("@memeloop/protocol", () => {
   it("loads public API", async () => {
@@ -53,6 +54,21 @@ describe("@memeloop/protocol", () => {
         isUserInitiated: true,
       }),
     ).toBe(true);
+  });
+
+  it("buildMemeloopFileUri / parseMemeloopUri round-trip", () => {
+    const nodeId = "n1+test";
+    const path = "src/foo bar/baz.ts";
+    const uri = buildMemeloopFileUri(nodeId, path);
+    expect(uri).toMatch(/^memeloop:\/\/node\//);
+    const parsed = parseMemeloopUri(uri);
+    expect(parsed).toEqual({
+      scheme: "memeloop",
+      kind: "file",
+      nodeId: "n1+test",
+      filePath: "src/foo bar/baz.ts",
+    });
+    expect(parseMemeloopUri("https://example.com")).toBeNull();
   });
 
   it("sendJsonRpcMethod forwards to sender", async () => {

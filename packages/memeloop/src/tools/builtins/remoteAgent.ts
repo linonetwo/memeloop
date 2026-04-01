@@ -1,3 +1,4 @@
+import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from "../structuredToolResult.js";
 import type { BuiltinToolContext, BuiltinToolImpl } from "./types.js";
 
 const TOOL_ID = "remoteAgent";
@@ -94,14 +95,24 @@ export const remoteAgentImpl: BuiltinToolImpl = async (args, context) => {
       });
     }
 
-    const summary = chunks.length > 0
-      ? chunks.join("").trim()
-      : "(task dispatched; stream not configured or no output yet)";
+    const fullSummary =
+      chunks.length > 0
+        ? chunks.join("").trim()
+        : "(task dispatched; stream not configured or no output yet)";
+    const shortSummary = truncateToolSummary(fullSummary);
     return {
-      summary,
+      summary: fullSummary,
       remoteNodeId: nodeId,
       remoteConversationId: conversationId,
       definitionId,
+      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+        summary: shortSummary,
+        detailRef: {
+          type: "sub-agent",
+          conversationId,
+          nodeId,
+        },
+      },
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

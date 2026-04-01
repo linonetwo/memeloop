@@ -1,3 +1,4 @@
+import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from "../structuredToolResult.js";
 import type { BuiltinToolImpl } from "./types.js";
 
 const TOOL_ID = "spawnAgent";
@@ -39,11 +40,21 @@ export const spawnAgentImpl: BuiltinToolImpl = async (args, context) => {
         if (typeof c === "string") chunks.push(c);
       }
     }
-    const summary = chunks.join("").trim() || "(no text output)";
+    const fullSummary = chunks.join("").trim() || "(no text output)";
+    const shortSummary = truncateToolSummary(fullSummary);
+    const nodeId = context.localNodeId?.trim() || "local";
     return {
-      summary,
+      summary: fullSummary,
       conversationId,
       definitionId,
+      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+        summary: shortSummary,
+        detailRef: {
+          type: "sub-agent",
+          conversationId,
+          nodeId,
+        },
+      },
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

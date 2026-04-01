@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { SQLiteAgentStorage } from "memeloop";
+
 import { createNodeRuntime } from "../nodeRuntime.js";
+import { ToolRegistry } from "../toolRegistry.js";
 import { startMockOpenAI } from "../../testing/mockOpenAI.js";
 
 describe("createNodeRuntime + mock OpenAI HTTP", () => {
@@ -122,5 +125,22 @@ describe("createNodeRuntime + mock OpenAI HTTP", () => {
     expect(tools).toContain("webFetch");
     expect(tools).toContain("todo");
     expect(tools).toContain("summary");
+  });
+
+  it("embed / SDK mode: injected storage + llmProvider without dataDir", async () => {
+    const storage = new SQLiteAgentStorage({ filename: ":memory:" });
+    const llmProvider = {
+      name: "embed-test",
+      chat: async function* () {
+        yield { type: "text-delta" as const, content: "ok", id: "1" };
+      },
+    };
+    const { runtime, providerRegistry } = createNodeRuntime({
+      storage,
+      llmProvider,
+      toolRegistry: new ToolRegistry(),
+    });
+    expect(runtime).toBeDefined();
+    expect(providerRegistry).toBeDefined();
   });
 });

@@ -34,13 +34,21 @@ interface BonjourLike {
   find(opts: { type: string }, cb: (svc: { name: string; host: string; port: number; txt?: Record<string, string> }) => void): { stop: () => void };
 }
 
+let testBonjourFactory: (() => (new () => BonjourLike) | null) | null = null;
+
 function getBonjour(): (new () => BonjourLike) | null {
+  if (testBonjourFactory) return testBonjourFactory();
   try {
     const m = require("bonjour-service") as { Bonjour?: new () => BonjourLike; default?: { Bonjour: new () => BonjourLike } };
     return m.Bonjour ?? m.default?.Bonjour ?? null;
   } catch {
     return null;
   }
+}
+
+/** Test-only seam: inject bonjour factory to avoid depending on real mDNS runtime. */
+export function __setBonjourFactoryForTest(factory: (() => (new () => BonjourLike) | null) | null): void {
+  testBonjourFactory = factory;
 }
 
 /**

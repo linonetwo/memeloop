@@ -1,5 +1,5 @@
 import type { ILLMProvider } from "memeloop";
-import type { ProviderEntry } from "../config.js";
+import type { ProviderEntry } from "../config";
 
 async function* parseOpenAiSseStream(res: Response): AsyncGenerator<unknown, void, unknown> {
   if (!res.body) {

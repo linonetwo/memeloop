@@ -1,7 +1,14 @@
-import type { ImWebhookHandler, MemeLoopRuntime } from "memeloop";
-import { IMChannelManager } from "memeloop";
+import type { IAgentStorage, ImWebhookHandler, MemeLoopRuntime } from "memeloop";
+import {
+  IMChannelManager,
+  streamRuntimeAgentReplyToIm,
+  TextMessageRenderer,
+  tryHandleImSlashCommand,
+} from "memeloop";
 
-import type { ImChannelYaml } from "../config.js";
+import type { ImChannelYaml } from "../config";
+import { resolveQuestionAnswer } from "memeloop";
+import { createImTaggedDriver } from "./imTaggedDriver.js";
 import {
   parseDiscordInteraction,
   sendDiscordFollowup,
@@ -15,6 +22,7 @@ export interface CreateImWebhookHandlerOptions {
   channels: ImChannelYaml[];
   manager: IMChannelManager;
   runtime: MemeLoopRuntime;
+  storage: IAgentStorage;
 }
 
 function parseQueryString(qs: string): Record<string, string> {
@@ -34,7 +42,7 @@ function parseQueryString(qs: string): Record<string, string> {
 type ImWebhookArgs = Parameters<ImWebhookHandler>[0] & { method?: string; queryString?: string };
 
 export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): ImWebhookHandler {
-  const { channels, manager, runtime } = options;
+  const { channels, manager, runtime, storage } = options;
 
   const driver = {
     createAgent: runtime.createAgent.bind(runtime),
@@ -84,10 +92,56 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
         return;
       }
       try {
-        await manager.dispatchInbound(inbound, driver, {
-          defaultDefinitionId: cfg.defaultDefinitionId ?? "memeloop:general-assistant",
+        const tagged = createImTaggedDriver(runtime, storage, {
+          channelId: inbound.channelId,
+          platform: inbound.platform,
+          imUserId: inbound.imUserId,
         });
-        await sendTelegramTextMessage(cfg.botToken, inbound.imUserId, "已收到，正在处理…");
+        // Route order: slash commands -> pendingQuestionId -> normal message (see plan v8).
+        const existing = await manager.getBinding(inbound.channelId, inbound.imUserId);
+        const defId = cfg.defaultDefinitionId ?? "memeloop:general-assistant";
+        if (inbound.text.startsWith("/") && inbound.text.trim().length > 1) {
+          const slash = await tryHandleImSlashCommand({
+            rawText: inbound.text,
+            channelId: inbound.channelId,
+            imUserId: inbound.imUserId,
+            manager,
+            storage,
+            driver: tagged,
+            runtime,
+            defaultDefinitionId: defId,
+          });
+          if (slash.handled) {
+            await sendTelegramTextMessage(cfg.botToken, inbound.imUserId, slash.messages.join("\n\n"));
+            res.writeHead(200, { "Content-Type": "text/plain" });
+            res.end("ok");
+            return;
+          }
+        }
+        if (existing?.pendingQuestionId) {
+          const ok = resolveQuestionAnswer(existing.pendingQuestionId, inbound.text);
+          await manager.setBinding({ ...existing, pendingQuestionId: undefined });
+          await sendTelegramTextMessage(cfg.botToken, inbound.imUserId, ok ? "已收到回答，继续执行…" : "回答未被接受（可能已超时）");
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end("ok");
+          return;
+        }
+        const { conversationId } = await manager.dispatchInbound(inbound, tagged, {
+          defaultDefinitionId: defId,
+        });
+        void streamRuntimeAgentReplyToIm({
+          runtime,
+          conversationId,
+          platform: "telegram",
+          renderer: new TextMessageRenderer(),
+          flush: (text) => sendTelegramTextMessage(cfg.botToken, inbound.imUserId, text),
+        }).catch((err) =>
+          sendTelegramTextMessage(
+            cfg.botToken,
+            inbound.imUserId,
+            `⚠️ ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
       } catch (e) {
         await sendTelegramTextMessage(
           cfg.botToken,

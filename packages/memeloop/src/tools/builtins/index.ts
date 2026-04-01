@@ -8,13 +8,17 @@ import { getMcpClientToolId, mcpClientConfigSchema, mcpClientImpl } from "./mcpC
 import { getRemoteAgentToolId, remoteAgentConfigSchema, remoteAgentImpl } from "./remoteAgent.js";
 import { getSpawnAgentToolId, spawnAgentConfigSchema, spawnAgentImpl } from "./spawnAgent.js";
 import { ASK_QUESTION_TOOL_ID, askQuestionConfigSchema, askQuestionImpl } from "./askQuestion.js";
-
 export { mcpClientImpl, mcpClientConfigSchema, getMcpClientToolId } from "./mcpClient.js";
 export { remoteAgentImpl, remoteAgentConfigSchema, remoteAgentListImpl, getRemoteAgentToolId } from "./remoteAgent.js";
 export { spawnAgentImpl, spawnAgentConfigSchema, getSpawnAgentToolId } from "./spawnAgent.js";
 export { askQuestionImpl, askQuestionConfigSchema, ASK_QUESTION_TOOL_ID } from "./askQuestion.js";
 export { resolveQuestionAnswer } from "./questionWaitRegistry.js";
 export type { BuiltinToolContext, BuiltinToolImpl } from "./types.js";
+export {
+  IM_SESSION_TOOL_IDS,
+  registerImSessionBuiltinTools,
+  type ImSessionBuiltinRegistration,
+} from "./imBuiltinTools.js";
 
 /**
  * Register MCP client, spawnAgent, and remoteAgent builtin tools with the registry.

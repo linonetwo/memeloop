@@ -21,4 +21,13 @@ describe("decodeAttachmentBlobRpc", () => {
     expect(decodeAttachmentBlobRpc({ found: false })).toBeNull();
     expect(decodeAttachmentBlobRpc({ found: true, dataBase64: "" })).toBeNull();
   });
+
+  it("fills defaults for filename/mimeType and derives size", () => {
+    const raw = Buffer.from([1, 2]).toString("base64");
+    const d = decodeAttachmentBlobRpc({ found: true, dataBase64: raw, size: 0 });
+    expect(d).not.toBeNull();
+    expect(d!.filename).toBe("attachment");
+    expect(d!.mimeType).toBe("application/octet-stream");
+    expect(d!.size).toBe(2);
+  });
 });

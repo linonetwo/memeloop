@@ -78,4 +78,50 @@ describe("createFetchLLMProvider", () => {
     const raw = await provider.chat({ stream: false, messages: [] });
     expect(raw).toBe("hello from model");
   });
+
+  it("covers SSE blocks without data: lines and non-JSON data payload", async () => {
+    const sse =
+      "\n\n" +
+      'data: not-json\n\n' +
+      'data: {"choices":[{"delta":{"content":"hi2"}}]}\n\n' +
+      "data: [DONE]\n\n";
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(new TextEncoder().encode(sse), {
+        status: 200,
+        headers: { "content-type": "text/event-stream; charset=utf-8" },
+      }),
+    ) as typeof fetch;
+
+    const provider = createFetchLLMProvider({
+      name: "openai-like",
+      baseUrl: "http://localhost:9999",
+      apiKey: "",
+    });
+
+    const raw = (await provider.chat({ stream: true, messages: [] })) as AsyncIterable<unknown>;
+    const chunks: unknown[] = [];
+    for await (const c of raw) {
+      chunks.push(c);
+    }
+
+    expect(chunks).toContain("not-json");
+    expect(chunks.some((c) => (c as any)?.choices?.[0]?.delta?.content === "hi2")).toBe(true);
+  });
+
+  it("throws when fetch returns non-ok HTTP status", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response("bad", {
+        status: 500,
+        headers: { "content-type": "text/plain" },
+      }),
+    ) as typeof fetch;
+
+    const provider = createFetchLLMProvider({
+      name: "openai-like",
+      baseUrl: "http://api",
+      apiKey: "",
+    });
+
+    await expect(provider.chat({ stream: false, messages: [] })).rejects.toThrow("LLM request failed: 500 bad");
+  });
 });

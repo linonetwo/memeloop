@@ -2,15 +2,19 @@
  * JSON-RPC 2.0 handlers: agent.*, terminal.*, knowledge.*, chat.*, file.*, mcp.*, auth.*, wiki.*
  */
 
-import type { AgentDefinition, ConversationMeta, WikiInfo } from "@memeloop/protocol";
+import type { AgentDefinition, ChatMessage, ConversationMeta, WikiInfo } from "@memeloop/protocol";
 
 import type { MemeLoopRuntime } from "memeloop";
 import { resolveQuestionAnswer } from "memeloop";
 import { resolveApproval } from "memeloop";
 import type { IAgentStorage } from "memeloop";
 import type { ITerminalSessionManager } from "../terminal/index.js";
+import { prepareTerminalSessionStorage, wireTerminalOutputToStorage } from "../terminal/sessionStorage";
+import { createThrottledTerminalOutputNotify } from "../terminal/throttleOutputNotify.js";
+import { runTerminalGetOutput, runTerminalSignal, runTerminalStart } from "../tools/terminal.js";
+import type { TerminalOutputChunk } from "../terminal/types.js";
 import type { IWikiManager } from "../knowledge/wikiManager.js";
-import type { ImChannelYaml } from "../config.js";
+import type { ImChannelYaml } from "../config";
 
 function maxTimestampPerOrigin(metas: ConversationMeta[]): Record<string, number> {
   const m: Record<string, number> = {};
@@ -26,6 +30,10 @@ export interface McpServerInfo {
   command: string;
   args?: string[];
 }
+
+/** memeloop.auth.confirmPin：连续失败 3 次后锁定 5 分钟（与方案 v8 一致）。 */
+const PIN_CONFIRM_MAX_FAILS = 3;
+const PIN_CONFIRM_LOCK_MS = 5 * 60 * 1000;
 
 export interface RpcHandlerContext {
   runtime: MemeLoopRuntime;
@@ -44,6 +52,37 @@ export interface RpcHandlerContext {
   fileBaseDir?: string;
   /** 可选通知发送器（JSON-RPC notification）。 */
   notify?: (method: string, params: unknown) => void;
+  /** 由 createNodeServer 每 WebSocket 连接注入；单测可省略（由 confirmPin 内懒创建）。 */
+  pinConfirmState?: { consecutiveFails: number; lockedUntil: number };
+  /** 可选：校验 PIN 确认码（用于 LAN 配对流程）。 */
+  verifyPinCode?: (confirmCode: string) => Promise<boolean>;
+}
+
+function getOrCreatePinConfirmState(context: RpcHandlerContext): {
+  consecutiveFails: number;
+  lockedUntil: number;
+} {
+  if (!context.pinConfirmState) {
+    context.pinConfirmState = { consecutiveFails: 0, lockedUntil: 0 };
+  }
+  return context.pinConfirmState;
+}
+
+function decodeJwtUserId(jwt: string): string | null {
+  if (!jwt || typeof jwt !== "string") return null;
+  const parts = jwt.split(".");
+  if (parts.length < 2) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1] as string, "base64url").toString("utf8")) as {
+      userId?: unknown;
+      sub?: unknown;
+    };
+    if (typeof payload.userId === "string" && payload.userId.trim()) return payload.userId;
+    if (typeof payload.sub === "string" && payload.sub.trim()) return payload.sub;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export async function handleRpc(
@@ -55,6 +94,47 @@ export async function handleRpc(
 
   if (method === "memeloop.auth.handshake") {
     return { ok: true, nodeId: context.nodeId };
+  }
+  if (method === "memeloop.auth.hello") {
+    const p = params as { nodeId?: string; capabilities?: Record<string, unknown> };
+    const nodeId = typeof p?.nodeId === "string" && p.nodeId.trim() ? p.nodeId.trim() : context.nodeId;
+    return { ok: true, nodeId, receivedAt: Date.now() };
+  }
+  if (method === "memeloop.auth.confirmPin") {
+    const p = params as { confirmCode?: string };
+    const confirmCode = typeof p?.confirmCode === "string" ? p.confirmCode.trim() : "";
+    if (!confirmCode) return { ok: false, reason: "invalid_confirm_code" };
+    if (!context.verifyPinCode) {
+      return { ok: false, reason: "pin_verifier_not_configured" };
+    }
+    const st = getOrCreatePinConfirmState(context);
+    const now = Date.now();
+    if (now < st.lockedUntil) {
+      return {
+        ok: false,
+        reason: "pin_rate_limited",
+        retryAfterMs: st.lockedUntil - now,
+      };
+    }
+    const ok = await context.verifyPinCode(confirmCode);
+    if (ok) {
+      st.consecutiveFails = 0;
+      st.lockedUntil = 0;
+      return { ok: true };
+    }
+    st.consecutiveFails += 1;
+    if (st.consecutiveFails >= PIN_CONFIRM_MAX_FAILS) {
+      st.lockedUntil = now + PIN_CONFIRM_LOCK_MS;
+    }
+    return { ok: false, reason: "pin_mismatch" };
+  }
+  if (method === "memeloop.auth.exchangeJwt") {
+    const p = params as { localJwt?: string; remoteJwt?: string };
+    const localUserId = decodeJwtUserId(typeof p?.localJwt === "string" ? p.localJwt : "");
+    const remoteUserId = decodeJwtUserId(typeof p?.remoteJwt === "string" ? p.remoteJwt : "");
+    if (!localUserId || !remoteUserId) return { ok: false };
+    if (localUserId !== remoteUserId) return { ok: false };
+    return { ok: true, matchedUserId: localUserId };
   }
 
   if (method === "memeloop.im.listChannels") {
@@ -141,17 +221,31 @@ export async function handleRpc(
     if (method === "memeloop.terminal.execute") {
       const p = params as {
         command: string;
-        timeoutMs?: number;
+        timeoutMs?: number | string;
         cwd?: string;
         waitMode?: "until-exit" | "until-timeout" | "detached";
-        maxWaitMs?: number;
+        maxWaitMs?: number | string;
         stream?: boolean;
       };
       const command = p.command;
-      const timeoutMs = p.timeoutMs ?? 60_000;
+      const timeoutMsRaw = p.timeoutMs ?? 60_000;
+      const timeoutMs0 =
+        typeof timeoutMsRaw === "number"
+          ? timeoutMsRaw
+          : typeof timeoutMsRaw === "string"
+            ? Number(timeoutMsRaw)
+            : 60_000;
+      const timeoutMs = Number.isFinite(timeoutMs0) && timeoutMs0 > 0 ? timeoutMs0 : 60_000;
       const cwd = p.cwd;
       const waitMode = p.waitMode ?? "until-timeout";
-      const maxWaitMs = p.maxWaitMs ?? timeoutMs;
+      const maxWaitMsRaw = p.maxWaitMs ?? timeoutMs;
+      const maxWaitMs0 =
+        typeof maxWaitMsRaw === "number"
+          ? maxWaitMsRaw
+          : typeof maxWaitMsRaw === "string"
+            ? Number(maxWaitMsRaw)
+            : timeoutMs;
+      const maxWaitMs = Number.isFinite(maxWaitMs0) && maxWaitMs0 > 0 ? maxWaitMs0 : timeoutMs;
       const stream = p.stream === true;
       const parts = command.trim().split(/\s+/);
       const cmd = parts[0];
@@ -165,30 +259,44 @@ export async function handleRpc(
         idleTimeoutMs: Math.min(15_000, timeoutMs),
       });
 
-      if (context.notify) {
-        const unsubOutput = terminalManager.onOutput((chunk) => {
-          if (chunk.sessionId !== sessionId) return;
-          context.notify?.("memeloop.terminal.output.delta", chunk);
-        });
-        const unsubPrompt = terminalManager.onInteractionPrompt((prompt) => {
-          if (prompt.sessionId !== sessionId) return;
-          context.notify?.("memeloop.terminal.interaction.prompt", prompt);
-        });
-        const unsubStatus = terminalManager.onStatusUpdate((status) => {
-          if (status.sessionId !== sessionId) return;
-          context.notify?.("memeloop.terminal.status.update", status);
-          if (status.status !== "running") {
-            unsubOutput();
-            unsubPrompt();
-            unsubStatus();
-          }
-        });
-        const info = terminalManager.get(sessionId);
-        if (info?.status !== "running") {
+      const originNodeId = context.nodeId;
+      const { terminalCid } = await prepareTerminalSessionStorage(storage, originNodeId, sessionId);
+      const throttledNotify = context.notify
+        ? createThrottledTerminalOutputNotify(
+            (method, params) => context.notify?.(method, params),
+            1000,
+          )
+        : undefined;
+      const { persistQueue, unsubOutput } = wireTerminalOutputToStorage(
+        storage,
+        originNodeId,
+        terminalCid,
+        sessionId,
+        terminalManager,
+        throttledNotify ? (chunk) => throttledNotify.push(chunk) : undefined,
+      );
+      const unsubPrompt = context.notify
+        ? terminalManager.onInteractionPrompt((prompt) => {
+            if (prompt.sessionId !== sessionId) return;
+            context.notify?.("memeloop.terminal.interaction.prompt", prompt);
+          })
+        : undefined;
+      const unsubStatus = terminalManager.onStatusUpdate((status) => {
+        if (status.sessionId !== sessionId) return;
+        context.notify?.("memeloop.terminal.status.update", status);
+        if (status.status !== "running") {
+          throttledNotify?.flush();
           unsubOutput();
-          unsubPrompt();
+          unsubPrompt?.();
           unsubStatus();
         }
+      });
+      const info = terminalManager.get(sessionId);
+      if (info?.status !== "running") {
+        throttledNotify?.flush();
+        unsubOutput();
+        unsubPrompt?.();
+        unsubStatus();
       }
       if (waitMode === "detached") {
         return { sessionId, status: "running", exitCode: null, done: false, timedOut: false, nextSeq: 1, chunks: [] };
@@ -198,6 +306,7 @@ export async function handleRpc(
         untilExit: waitMode === "until-exit",
         maxWaitMs,
       });
+      await persistQueue;
       const timedOut = waitMode === "until-timeout" && !follow.done;
       if (timedOut) await terminalManager.cancel(sessionId);
       const stdout = follow.chunks.filter((c) => c.stream === "stdout").map((c) => c.data).join("");
@@ -237,6 +346,19 @@ export async function handleRpc(
         untilExit: p.untilExit === true,
         maxWaitMs: p.maxWaitMs ?? 30_000,
       });
+    }
+    if (method === "memeloop.terminal.start") {
+      return runTerminalStart(params as Record<string, unknown>, terminalManager, {
+        storage,
+        nodeId: context.nodeId,
+        terminalWsNotify: context.notify,
+      });
+    }
+    if (method === "memeloop.terminal.signal") {
+      return runTerminalSignal(params as Record<string, unknown>, terminalManager);
+    }
+    if (method === "memeloop.terminal.getOutput") {
+      return runTerminalGetOutput(params as Record<string, unknown>, terminalManager);
     }
   }
 
@@ -363,6 +485,66 @@ export async function handleRpc(
     const msgs = await storage.getMessages(cid, { mode: "full-content" });
     const messages = msgs.filter((m) => !known.has(m.messageId));
     return { messages };
+  }
+
+  if (method === "memeloop.chat.pullSubAgentLog") {
+    const p = params as { conversationId?: string; knownMessageIds?: string[] };
+    const cid = typeof p?.conversationId === "string" ? p.conversationId.trim() : "";
+    const known = new Set(Array.isArray(p?.knownMessageIds) ? p.knownMessageIds : []);
+    if (!cid) {
+      return { nodeId: context.nodeId, conversationId: "", messages: [] as ChatMessage[] };
+    }
+    const msgs = await storage.getMessages(cid, { mode: "full-content" });
+    const messages = msgs.filter((m) => !known.has(m.messageId));
+    return { nodeId: context.nodeId, conversationId: cid, messages };
+  }
+
+  if (method === "memeloop.chat.pullTerminalSession") {
+    const p = params as { sessionId?: string; fromSeq?: number };
+    const sessionId = typeof p?.sessionId === "string" ? p.sessionId.trim() : "";
+    const fromSeq = typeof p?.fromSeq === "number" && p.fromSeq >= 1 ? p.fromSeq : 1;
+    if (!sessionId) {
+      return {
+        nodeId: context.nodeId,
+        source: "none" as const,
+        sessionId: "",
+        messages: [] as ChatMessage[],
+        chunks: [] as TerminalOutputChunk[],
+      };
+    }
+    const terminalConversationId = `terminal:${sessionId}`;
+    const stored = await storage.getMessages(terminalConversationId, { mode: "full-content" });
+    if (stored.length > 0) {
+      return {
+        nodeId: context.nodeId,
+        source: "storage" as const,
+        sessionId,
+        conversationId: terminalConversationId,
+        messages: stored,
+        chunks: [] as TerminalOutputChunk[],
+      };
+    }
+    if (terminalManager?.get(sessionId)) {
+      const chunks = terminalManager.getChunksSince(sessionId, fromSeq);
+      const session = terminalManager.get(sessionId);
+      return {
+        nodeId: context.nodeId,
+        source: "memory" as const,
+        sessionId,
+        conversationId: terminalConversationId,
+        session,
+        messages: [] as ChatMessage[],
+        chunks,
+      };
+    }
+    return {
+      nodeId: context.nodeId,
+      source: "none" as const,
+      sessionId,
+      conversationId: terminalConversationId,
+      messages: [] as ChatMessage[],
+      chunks: [] as TerminalOutputChunk[],
+    };
   }
 
   if (method === "memeloop.storage.getAttachmentBlob") {

@@ -64,11 +64,14 @@ export class SQLiteAgentStorage implements IAgentStorage {
           role TEXT NOT NULL,
           content TEXT NOT NULL,
           toolCallsJson TEXT,
-          attachmentsJson TEXT
+          attachmentsJson TEXT,
+          detailRefJson TEXT
         );
       `,
       )
       .run();
+
+    this.ensureMessagesDetailRefColumn();
 
     this.db
       .prepare(
@@ -126,6 +129,21 @@ export class SQLiteAgentStorage implements IAgentStorage {
       `,
       )
       .run();
+
+    this.ensureImBindingsPendingQuestionColumn();
+  }
+
+  /** Upgrades DBs created before `DetailRef` column existed. */
+  private ensureMessagesDetailRefColumn(): void {
+    const cols = this.db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[];
+    if (cols.some((c) => c.name === "detailRefJson")) return;
+    this.db.prepare(`ALTER TABLE messages ADD COLUMN detailRefJson TEXT`).run();
+  }
+
+  private ensureImBindingsPendingQuestionColumn(): void {
+    const cols = this.db.prepare(`PRAGMA table_info(im_bindings)`).all() as { name: string }[];
+    if (cols.some((c) => c.name === "pendingQuestionId")) return;
+    this.db.prepare(`ALTER TABLE im_bindings ADD COLUMN pendingQuestionId TEXT`).run();
   }
 
   async listConversations(options: ListConversationsOptions = {}): Promise<ConversationMeta[]> {
@@ -184,6 +202,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         content: row.content,
         toolCalls: row.toolCallsJson ? JSON.parse(row.toolCallsJson) : undefined,
         attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
+        detailRef: row.detailRefJson ? JSON.parse(row.detailRefJson) : undefined,
       };
       return msg;
     });
@@ -208,8 +227,8 @@ export class SQLiteAgentStorage implements IAgentStorage {
       `
       INSERT INTO messages (
         messageId, conversationId, originNodeId, timestamp, lamportClock,
-        role, content, toolCallsJson, attachmentsJson
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        role, content, toolCallsJson, attachmentsJson, detailRefJson
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `,
     );
 
@@ -222,6 +241,12 @@ export class SQLiteAgentStorage implements IAgentStorage {
         ? message.content.slice(0, 200)
         : String(message.content).slice(0, 200);
 
+    const isAuxiliaryConversation =
+      message.conversationId.startsWith("terminal:") ||
+      message.conversationId.startsWith("spawn:") ||
+      message.conversationId.startsWith("remote:");
+    const isUserInitiated = isAuxiliaryConversation ? 0 : 1;
+
     const tx = this.db.transaction(() => {
       upsertConversation.run(
         message.conversationId,
@@ -232,7 +257,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         message.originNodeId,
         definitionId,
         null,
-        1,
+        isUserInitiated,
         null,
       );
       insertMessage.run(
@@ -245,6 +270,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         message.content,
         message.toolCalls ? JSON.stringify(message.toolCalls) : null,
         message.attachments ? JSON.stringify(message.attachments) : null,
+        message.detailRef ? JSON.stringify(message.detailRef) : null,
       );
     });
 
@@ -292,8 +318,8 @@ export class SQLiteAgentStorage implements IAgentStorage {
       `
       INSERT OR IGNORE INTO messages (
         messageId, conversationId, originNodeId, timestamp, lamportClock,
-        role, content, toolCallsJson, attachmentsJson
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        role, content, toolCallsJson, attachmentsJson, detailRefJson
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `,
     );
     const affected = new Set<string>();
@@ -309,6 +335,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
           m.content,
           m.toolCalls ? JSON.stringify(m.toolCalls) : null,
           m.attachments ? JSON.stringify(m.attachments) : null,
+          m.detailRef ? JSON.stringify(m.detailRef) : null,
         );
         if (info.changes > 0) {
           affected.add(m.conversationId);
@@ -468,7 +495,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
     const row = this.db
       .prepare(
         `
-        SELECT channelId, imUserId, activeConversationId, defaultDefinitionId, updatedAt
+        SELECT channelId, imUserId, activeConversationId, defaultDefinitionId, pendingQuestionId, updatedAt
         FROM im_bindings WHERE channelId = ? AND imUserId = ? LIMIT 1
       `,
       )
@@ -478,6 +505,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
           imUserId: string;
           activeConversationId: string;
           defaultDefinitionId: string | null;
+          pendingQuestionId: string | null;
           updatedAt: number;
         }
       | undefined;
@@ -487,6 +515,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
       imUserId: row.imUserId,
       activeConversationId: row.activeConversationId,
       defaultDefinitionId: row.defaultDefinitionId ?? undefined,
+      pendingQuestionId: row.pendingQuestionId ?? undefined,
     };
   }
 
@@ -495,11 +524,12 @@ export class SQLiteAgentStorage implements IAgentStorage {
     this.db
       .prepare(
         `
-        INSERT INTO im_bindings (channelId, imUserId, activeConversationId, defaultDefinitionId, updatedAt)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO im_bindings (channelId, imUserId, activeConversationId, defaultDefinitionId, pendingQuestionId, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(channelId, imUserId) DO UPDATE SET
           activeConversationId = excluded.activeConversationId,
           defaultDefinitionId = excluded.defaultDefinitionId,
+          pendingQuestionId = excluded.pendingQuestionId,
           updatedAt = excluded.updatedAt
       `,
       )
@@ -508,6 +538,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         record.imUserId,
         record.activeConversationId,
         record.defaultDefinitionId ?? null,
+        record.pendingQuestionId ?? null,
         now,
       );
   }

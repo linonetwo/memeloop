@@ -7,10 +7,12 @@ import type {
   INetworkService,
   IToolRegistry,
 } from "../../../types.js";
+import { MEMELOOP_STRUCTURED_TOOL_KEY } from "../../structuredToolResult.js";
 import {
   registerBuiltinTools,
   mcpClientImpl,
   spawnAgentImpl,
+  remoteAgentImpl,
   remoteAgentListImpl,
   ASK_QUESTION_TOOL_ID,
 } from "../index.js";
@@ -109,6 +111,100 @@ describe("builtin tools", () => {
         context,
       ) as { error?: string };
       expect(result.error).toContain("Local agent runner not configured");
+    });
+
+    it("returns __memeloopToolResult with sub-agent detailRef when runLocalAgent succeeds", async () => {
+      async function* runLocal(): AsyncIterable<{ type: "message"; data: string }> {
+        yield { type: "message", data: "sub output" };
+      }
+      const context = createMinimalContext({
+        runLocalAgent: runLocal,
+        localNodeId: "node-a",
+      });
+      const result = (await spawnAgentImpl({ definitionId: "def1", message: "hi" }, context)) as Record<
+        string,
+        unknown
+      >;
+      expect(result.summary).toBe("sub output");
+      expect(typeof result.conversationId).toBe("string");
+      expect(result.conversationId).toMatch(/^spawn:def1:/);
+      const structured = result[MEMELOOP_STRUCTURED_TOOL_KEY] as {
+        summary: string;
+        detailRef: { type: string; conversationId: string; nodeId: string };
+      };
+      expect(structured.summary).toBe("sub output");
+      expect(structured.detailRef.type).toBe("sub-agent");
+      expect(structured.detailRef.nodeId).toBe("node-a");
+      expect(structured.detailRef.conversationId).toBe(result.conversationId);
+    });
+
+    it("handles object message chunks / no-text fallback / runner error", async () => {
+      async function* runLocalObj(): AsyncIterable<{ type: "message"; data: unknown }> {
+        yield { type: "message", data: { content: "obj-output" } };
+      }
+      const okCtx = createMinimalContext({ runLocalAgent: runLocalObj });
+      const ok = (await spawnAgentImpl({ definitionId: "def1", message: "hi" }, okCtx)) as Record<string, unknown>;
+      expect(ok.summary).toBe("obj-output");
+
+      async function* runLocalEmpty(): AsyncIterable<{ type: "thinking"; data: string }> {
+        yield { type: "thinking", data: "..." };
+      }
+      const emptyCtx = createMinimalContext({ runLocalAgent: runLocalEmpty as any });
+      const empty = (await spawnAgentImpl({ definitionId: "def1", message: "hi" }, emptyCtx)) as Record<string, unknown>;
+      expect(empty.summary).toBe("(no text output)");
+
+      const badCtx = createMinimalContext({
+        runLocalAgent: (() => {
+          throw new Error("boom");
+        }) as any,
+      });
+      const err = (await spawnAgentImpl({ definitionId: "def1", message: "hi" }, badCtx)) as { error?: string };
+      expect(err.error).toContain("spawnAgent failed");
+    });
+  });
+
+  describe("remoteAgentImpl", () => {
+    it("returns __memeloopToolResult with sub-agent detailRef when RPC succeeds", async () => {
+      const sendRpc = vi
+        .fn()
+        .mockResolvedValueOnce({ conversationId: "remote-conv-1" })
+        .mockResolvedValueOnce(undefined);
+      const context = createMinimalContext({ sendRpcToNode: sendRpc });
+      const result = (await remoteAgentImpl(
+        { nodeId: "peer1", definitionId: "d1", message: "m1" },
+        context,
+      )) as Record<string, unknown>;
+      expect(sendRpc).toHaveBeenCalledWith("peer1", "memeloop.agent.create", expect.any(Object));
+      expect(sendRpc).toHaveBeenCalledWith("peer1", "memeloop.agent.send", expect.any(Object));
+      expect(result.remoteNodeId).toBe("peer1");
+      expect(result.remoteConversationId).toBe("remote-conv-1");
+      const structured = result[MEMELOOP_STRUCTURED_TOOL_KEY] as {
+        summary: string;
+        detailRef: { type: string; conversationId: string; nodeId: string };
+      };
+      expect(structured.detailRef.type).toBe("sub-agent");
+      expect(structured.detailRef.nodeId).toBe("peer1");
+      expect(structured.detailRef.conversationId).toBe("remote-conv-1");
+    });
+
+    it("covers list fallback, missing conversationId and rpc failure", async () => {
+      const listCtx = createMinimalContext({
+        getPeers: async () => [{ identity: { nodeId: "n1", name: "N1" }, status: "online" }],
+      } as any);
+      const list = await remoteAgentImpl({}, listCtx);
+      expect((list as any).nodes).toBeDefined();
+
+      const missingConv = createMinimalContext({
+        sendRpcToNode: vi.fn().mockResolvedValueOnce({}),
+      });
+      const r1 = await remoteAgentImpl({ nodeId: "n1", definitionId: "d1", message: "m1" }, missingConv);
+      expect((r1 as any).error).toContain("did not return conversationId");
+
+      const rpcFail = createMinimalContext({
+        sendRpcToNode: vi.fn().mockRejectedValue(new Error("rpc-bad")),
+      });
+      const r2 = await remoteAgentImpl({ nodeId: "n1", definitionId: "d1", message: "m1" }, rpcFail);
+      expect((r2 as any).error).toContain("remoteAgent failed");
     });
   });
 

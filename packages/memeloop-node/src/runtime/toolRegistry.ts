@@ -1,5 +1,5 @@
 import type { IToolRegistry, PromptConcatTool } from "memeloop";
-import type { ToolPermissionConfig } from "../config.js";
+import type { ToolPermissionConfig } from "../config";
 
 /**
  * Simple Map-based tool registry. Optionally wraps another registry with allowlist/blocklist.

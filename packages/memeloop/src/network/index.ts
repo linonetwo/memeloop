@@ -31,12 +31,43 @@ export type {
   FrpTunnelStop,
 } from "./connectivity.js";
 
+export { createNodeServer, createGitProxyHandler } from "./nodeServer.js";
+
 export {
-  createNodeServer,
-  createGitProxyHandler,
-} from "./nodeServer.js";
+  encryptNoiseFrame,
+  decryptNoiseFrame,
+  NoiseJsonRpcCodec,
+} from "./noiseTransport.js";
+
+export {
+  completeNoiseXxHandshake,
+  createNoiseXxInitiator,
+  createNoiseXxResponder,
+  generateX25519KeyPairForNoise,
+  getNoiseXxPeerCryptoMaterial,
+  MEMELOOP_NOISE_PROLOGUE_V1,
+} from "./noiseXxHandshake.js";
+export type {
+  NoiseStaticKeyPair,
+  NoiseXxHandshakePeer,
+  NoiseXxHandshakeResult,
+} from "./noiseXxHandshake.js";
+
+export {
+  computePinConfirmCode,
+  verifyPinConfirmCode,
+} from "./pinConfirmCode.js";
+export {
+  loadKnownNodes,
+  saveKnownNodes,
+  upsertKnownNode,
+  removeKnownNode,
+  trustMatchesStored,
+  getDefaultKnownNodesPath,
+} from "./knownNodesStore.js";
 export type {
   CreateNodeServerOptions,
+  NodeRpcContext,
   NodeRpcHandler,
   NodeGitHandler,
   WsAuthOptions,

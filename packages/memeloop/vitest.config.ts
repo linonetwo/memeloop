@@ -13,7 +13,16 @@ export default defineConfig({
         "src/**/index.ts",
         "src/**/types.ts",
         "src/**/interface.ts",
+        "**/*.d.ts",
+        "src/framework/taskAgentContract.ts",
+        "src/tools/defineToolTypes.ts",
       ],
+      thresholds: {
+        statements: 80,
+        branches: 80,
+        functions: 80,
+        lines: 80,
+      },
     },
   },
 });

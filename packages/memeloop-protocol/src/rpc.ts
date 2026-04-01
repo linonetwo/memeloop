@@ -1,5 +1,6 @@
 import type { AgentDefinition } from "./agent.js";
-import type { AuthHandshakeParams } from "./auth.js";
+import type { ChatMessage } from "./message.js";
+import type { AuthHandshakeParams, PinConfirmation } from "./auth.js";
 import type { WikiInfo } from "./node.js";
 import type { ConversationMeta, VersionVector } from "./sync.js";
 
@@ -35,6 +36,21 @@ export interface RpcMethodMap {
   "memeloop.auth.handshake": {
     params: AuthHandshakeParams;
     result: { ok: true; nodeId: string };
+  };
+  "memeloop.auth.hello": {
+    params: {
+      nodeId: string;
+      capabilities?: Record<string, unknown>;
+    };
+    result: { ok: true; nodeId: string; receivedAt: number };
+  };
+  "memeloop.auth.confirmPin": {
+    params: PinConfirmation;
+    result: { ok: boolean; reason?: string; retryAfterMs?: number };
+  };
+  "memeloop.auth.exchangeJwt": {
+    params: { localJwt: string; remoteJwt: string };
+    result: { ok: boolean; matchedUserId?: string };
   };
   "memeloop.agent.create": {
     params: { definitionId: string; initialMessage?: string };
@@ -93,6 +109,25 @@ export interface RpcMethodMap {
   };
   "memeloop.terminal.cancel": {
     params: { sessionId: string };
+    result: unknown;
+  };
+  "memeloop.terminal.start": {
+    params: {
+      command: string;
+      mode?: "await" | "background" | "interactive" | "service";
+      cwd?: string;
+      parentConversationId?: string;
+      label?: string;
+      idleTimeoutMs?: number;
+    };
+    result: unknown;
+  };
+  "memeloop.terminal.signal": {
+    params: { sessionId: string; signal?: "SIGINT" | "SIGTERM" | "SIGKILL" };
+    result: unknown;
+  };
+  "memeloop.terminal.getOutput": {
+    params: { sessionId: string; tailLines?: number; tailChars?: number };
     result: unknown;
   };
   "memeloop.knowledge.query": {
@@ -161,6 +196,14 @@ export interface RpcMethodMap {
   };
   "memeloop.sync.pullMissingMessages": {
     params: { conversationId: string; afterLamport?: number };
+    result: unknown;
+  };
+  "memeloop.chat.pullSubAgentLog": {
+    params: { conversationId: string; knownMessageIds?: string[] };
+    result: { nodeId: string; conversationId: string; messages: ChatMessage[] };
+  };
+  "memeloop.chat.pullTerminalSession": {
+    params: { sessionId: string; fromSeq?: number };
     result: unknown;
   };
   "memeloop.storage.getAttachmentBlob": {

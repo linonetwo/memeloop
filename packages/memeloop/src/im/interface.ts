@@ -35,11 +35,17 @@ export interface IIMAdapter {
 /** 将 Agent 输出格式化为 IM 可发送的纯文本 */
 export interface IIMMessageRenderer {
   renderPlainText(content: string): string;
-  renderToolCall(toolName: string, args: unknown): string;
-  renderToolResult(toolName: string, result: unknown): string;
+  /** 单行工具调用摘要（IM 默认不展示完整工具参数/结果） */
+  renderToolCallSummary(toolName: string, args: unknown): string;
+  /**
+   * 工具结果摘要（返回 null 表示隐藏）。
+   * 规则摘要优先：避免把大结果刷到 IM。
+   */
+  renderToolResultSummary(toolName: string, result: unknown): string | null;
   renderToolApproval(toolName: string, args: unknown): string;
   renderAskQuestion(question: string, options?: string[]): string;
-  renderThinking(content: string): string;
+  /** IM 默认隐藏 thinking，若要显示由实现自行决定。 */
+  renderThinking(content: string): string | null;
   renderError(error: string): string;
   renderTodoList(todos: Array<{ id: string; text: string; done?: boolean }>): string;
 }

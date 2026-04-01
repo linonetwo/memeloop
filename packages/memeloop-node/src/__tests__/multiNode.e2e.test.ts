@@ -15,8 +15,14 @@ describe("memeloop-node multi-node e2e", () => {
       const nodeB = await startTestNode("node-B");
       servers.push(nodeA.server, nodeB.server);
 
-      const managerA = new PeerConnectionManager({ localNodeId: "node-A" });
-      const managerB = new PeerConnectionManager({ localNodeId: "node-B" });
+      const managerA = new PeerConnectionManager({
+        localNodeId: "node-A",
+        noiseStaticKeyPair: nodeA.noiseStaticKeyPair,
+      });
+      const managerB = new PeerConnectionManager({
+        localNodeId: "node-B",
+        noiseStaticKeyPair: nodeB.noiseStaticKeyPair,
+      });
 
       const { nodeId: remoteFromA } = await managerA.addPeerByUrl(
         `ws://127.0.0.1:${nodeB.port}`,

@@ -1,0 +1,73 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  getDefaultConfigPath,
+  loadConfig,
+  normalizeAgentDefinition,
+  saveConfig,
+} from "../config";
+
+describe("config", () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const d of tmpDirs) {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
+    tmpDirs.length = 0;
+  });
+
+  it("returns default config path under cwd", () => {
+    const p = getDefaultConfigPath("/tmp/abc");
+    expect(p).toBe(path.join("/tmp/abc", "memeloop-node.yaml"));
+  });
+
+  it("loads empty config when file does not exist", () => {
+    const p = path.join(os.tmpdir(), `missing-${Date.now()}.yaml`);
+    expect(loadConfig(p)).toEqual({});
+  });
+
+  it("saves and loads yaml config", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memeloop-node-config-"));
+    tmpDirs.push(dir);
+    const p = path.join(dir, "memeloop-node.yaml");
+    const data = {
+      name: "node-a",
+      cloudUrl: "https://cloud.example.com",
+      providers: [{ name: "x", baseUrl: "https://api.example.com" }],
+      auth: { ws: { enabled: true, mode: "lan-pin" as const, pin: "123456" } },
+    };
+    saveConfig(data, p);
+    const loaded = loadConfig(p);
+    expect(loaded.name).toBe("node-a");
+    expect(loaded.cloudUrl).toBe("https://cloud.example.com");
+    expect(loaded.auth?.ws?.pin).toBe("123456");
+  });
+
+  it("returns empty config when yaml root is not object", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memeloop-node-config-"));
+    tmpDirs.push(dir);
+    const p = path.join(dir, "memeloop-node.yaml");
+    fs.writeFileSync(p, "- a\n- b\n", "utf8");
+    expect(loadConfig(p)).toEqual({});
+  });
+
+  it("normalizes agent definition defaults", () => {
+    const normalized = normalizeAgentDefinition({ id: "agent-x" });
+    expect(normalized).toEqual({
+      id: "agent-x",
+      name: "agent-x",
+      description: "",
+      systemPrompt: "",
+      tools: [],
+      modelConfig: undefined,
+      promptSchema: undefined,
+      agentFrameworkConfig: undefined,
+      version: "1",
+    });
+  });
+});

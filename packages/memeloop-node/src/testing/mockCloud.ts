@@ -1,3 +1,4 @@
+import { randomBytes, verify, createPublicKey } from "node:crypto";
 import http from "node:http";
 
 export interface StartedMockCloud {
@@ -9,7 +10,9 @@ export interface StartedMockCloud {
 
 export async function startMockCloud(): Promise<StartedMockCloud> {
   const nodeSecrets = new Map<string, string>();
+  const nodePubkeys = new Map<string, string>();
   const issuedTokens = new Map<string, { nodeId: string }>();
+  const challenges = new Map<string, string>();
 
   function json(res: http.ServerResponse, status: number, body: unknown) {
     res.writeHead(status, { "Content-Type": "application/json" });
@@ -51,8 +54,40 @@ export async function startMockCloud(): Promise<StartedMockCloud> {
       const nodeId = `node_${Math.random().toString(16).slice(2, 10)}`;
       const nodeSecret = `secret_${Math.random().toString(16).slice(2, 18)}`;
       nodeSecrets.set(nodeId, nodeSecret);
+      if (typeof body.ed25519PublicKey === "string") nodePubkeys.set(nodeId, body.ed25519PublicKey);
       return json(res, 200, { nodeId, nodeSecret });
     }
+    if (method === "POST" && url === "/api/nodes/auth/challenge") {
+      const body = await readBody(req);
+      const nodeId = typeof body?.nodeId === "string" ? body.nodeId : "";
+      if (!nodeId) return json(res, 400, { error: "missing nodeId" });
+      if (!nodePubkeys.has(nodeId)) return json(res, 404, { error: "node_not_found_or_no_pubkey" });
+      const challenge = randomBytes(32).toString("base64url");
+      challenges.set(nodeId, challenge);
+      return json(res, 200, { challenge, expiresIn: 300 });
+    }
+
+    if (method === "POST" && url === "/api/nodes/auth/verify") {
+      const body = await readBody(req);
+      const nodeId = typeof body?.nodeId === "string" ? body.nodeId : "";
+      const signature = typeof body?.signature === "string" ? body.signature : "";
+      if (!nodeId || !signature) return json(res, 400, { error: "missing nodeId/signature" });
+      const challenge = challenges.get(nodeId);
+      const pub = nodePubkeys.get(nodeId);
+      if (!challenge || !pub) return json(res, 401, { error: "challenge_not_found" });
+      const ok = verify(
+        null,
+        Buffer.from(challenge, "base64url"),
+        createPublicKey({ key: Buffer.from(pub, "base64url"), format: "der", type: "spki" }),
+        Buffer.from(signature, "base64url"),
+      );
+      if (!ok) return json(res, 401, { error: "invalid_signature" });
+      const accessToken = `jwt_${Math.random().toString(16).slice(2, 18)}`;
+      issuedTokens.set(accessToken, { nodeId: String(nodeId) });
+      challenges.delete(nodeId);
+      return json(res, 200, { accessToken, expiresIn: 900 });
+    }
+
 
     if (method === "POST" && url === "/api/nodes/token") {
       const body = await readBody(req);
@@ -84,6 +119,11 @@ export async function startMockCloud(): Promise<StartedMockCloud> {
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not Found");
   });
+  const sockets = new Set<import("node:net").Socket>();
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
 
   await new Promise<void>((resolve, reject) => {
     server.listen(0, "127.0.0.1", () => resolve());
@@ -101,6 +141,7 @@ export async function startMockCloud(): Promise<StartedMockCloud> {
     port,
     baseUrl,
     async stop() {
+      for (const s of sockets) s.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

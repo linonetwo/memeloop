@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   decryptWecomEncryptPayload,
+  extractEncryptCDATA,
+  looksLikeWecomEncryptedXml,
   parseWecomInboundFromXml,
   verifyWecomPostMsgSignature,
 } from "../wecomCrypto.js";
@@ -50,6 +52,13 @@ describe("wecomCrypto", () => {
     expect(verifyWecomPostMsgSignature(token, ts, nonce, enc, "deadbeef")).toBe(false);
   });
 
+  it("verifyWecomPostMsgSignature returns false on empty token/signature", () => {
+    expect(verifyWecomPostMsgSignature("", "t", "n", "e", "sig")).toBe(false);
+    expect(verifyWecomPostMsgSignature("   ", "t", "n", "e", "sig")).toBe(false);
+    // msgSignature is required
+    expect(verifyWecomPostMsgSignature(token, "t", "n", "e", "")).toBe(false);
+  });
+
   it("decryptWecomEncryptPayload + parseWecomInboundFromXml roundtrip", () => {
     const xml = `<xml><FromUserName><![CDATA[fromU]]></FromUserName><Content><![CDATA[hi wecom]]></Content></xml>`;
     const b64 = encryptWecomForTest(encodingKey, xml, corpId);
@@ -58,5 +67,53 @@ describe("wecomCrypto", () => {
     const msg = parseWecomInboundFromXml(plain!, "chan1");
     expect(msg?.text).toBe("hi wecom");
     expect(msg?.imUserId).toBe("fromU");
+  });
+
+  it("decryptWecomEncryptPayload returns null when corpId mismatched but ciphertext is valid", () => {
+    const xml = `<xml><FromUserName><![CDATA[fromU]]></FromUserName><Content><![CDATA[hi wecom]]></Content></xml>`;
+    const b64 = encryptWecomForTest(encodingKey, xml, corpId);
+    expect(decryptWecomEncryptPayload(encodingKey, b64, "corp-wrong")).toBeNull();
+  });
+
+  it("decryptWecomEncryptPayload branches for invalid cipher length and broken padding", () => {
+    // cipher length < 16
+    expect(decryptWecomEncryptPayload(encodingKey, Buffer.from("short").toString("base64"), corpId)).toBeNull();
+
+    // Break padding byte by flipping last ciphertext byte (keep length so decrypt reaches padding validation).
+    const xml = `<xml><FromUserName><![CDATA[fromU]]></FromUserName><Content><![CDATA[hi wecom]]></Content></xml>`;
+    const b64 = encryptWecomForTest(encodingKey, xml, corpId);
+    const buf = Buffer.from(b64, "base64");
+    buf[buf.length - 1] ^= 0xff;
+    const corrupted = buf.toString("base64");
+    expect(decryptWecomEncryptPayload(encodingKey, corrupted, corpId)).toBeNull();
+  });
+
+  it("returns null on invalid decrypt inputs and corp mismatch", () => {
+    expect(decryptWecomEncryptPayload("bad", "x")).toBeNull();
+    expect(decryptWecomEncryptPayload(encodingKey, "x", "corp-mismatch")).toBeNull();
+  });
+
+  it("extractEncryptCDATA / looksLikeWecomEncryptedXml branches", () => {
+    const xml = "<xml><Encrypt><![CDATA[abc]]></Encrypt></xml>";
+    expect(extractEncryptCDATA(xml)).toBe("abc");
+    expect(extractEncryptCDATA("<xml></xml>")).toBeNull();
+    expect(extractEncryptCDATA("<xml><Encrypt><![CDATA[]]></Encrypt></xml>")).toBeNull();
+    expect(looksLikeWecomEncryptedXml(xml)).toBe(true);
+    expect(looksLikeWecomEncryptedXml("<xml></xml>")).toBe(false);
+  });
+
+  it("parseWecomInboundFromXml returns null when Content/Text empty or FromUserName missing", () => {
+    const xmlEmptyText = "<xml><FromUserName><![CDATA[u1]]></FromUserName><Content><![CDATA[]]></Content></xml>";
+    const msg1 = parseWecomInboundFromXml(xmlEmptyText, "ch1");
+    expect(msg1).toBeNull();
+
+    const xmlMissingFrom = "<xml><Content><![CDATA[hi]]></Content></xml>";
+    const msg2 = parseWecomInboundFromXml(xmlMissingFrom, "ch1");
+    expect(msg2).toBeNull();
+
+    const xmlWithFromLowercase = "<xml><fromusername><![CDATA[u2]]></fromusername><text><![CDATA[ok]]></text></xml>";
+    const msg3 = parseWecomInboundFromXml(xmlWithFromLowercase, "ch1");
+    expect(msg3?.imUserId).toBe("u2");
+    expect(msg3?.text).toBe("ok");
   });
 });

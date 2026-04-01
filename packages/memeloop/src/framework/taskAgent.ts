@@ -1,4 +1,4 @@
-import type { AgentDefinition, ChatMessage } from "@memeloop/protocol";
+import type { AgentDefinition, ChatMessage, DetailRef } from "@memeloop/protocol";
 
 import { matchAllToolCallings, type ToolCallingMatch } from "../prompt/responsePatternUtility.js";
 import { filterOldMessagesByDuration } from "../prompt/utilities.js";
@@ -9,6 +9,7 @@ import { nextLamportClockForConversation } from "../storage/nextLamport.js";
 import { createHooksWithPlugins, resolvePromptPluginMap, runResponseCompleteHooks } from "../tools/pluginRegistry.js";
 import { requestApproval } from "../tools/approval.js";
 import type { DefineToolAgentFrameworkContext } from "../tools/types.js";
+import { extractMemeloopStructuredToolPayload, truncateToolSummary } from "../tools/structuredToolResult.js";
 import { agentInstanceMessageToChatMessage, chatMessagesToAgentMessages } from "./agentMessageBridge.js";
 
 export type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "./taskAgentContract.js";
@@ -71,26 +72,22 @@ function chunkToText(chunk: unknown): string {
   return JSON.stringify(chunk);
 }
 
-async function streamLlm(
+async function* streamLlm(
   context: AgentFrameworkContext,
   request: unknown,
-): Promise<{ chunks: unknown[]; text: string }> {
+): AsyncGenerator<unknown, void, unknown> {
   const raw = context.llmProvider.chat(request);
   let resolved: unknown = raw;
   if (raw != null && typeof (raw as Promise<unknown>).then === "function") {
     resolved = await (raw as Promise<unknown>);
   }
-  const chunks: unknown[] = [];
   if (isAsyncIterable(resolved)) {
-    let acc = "";
     for await (const chunk of resolved) {
-      chunks.push(chunk);
-      acc += chunkToText(chunk);
+      yield chunk;
     }
-    return { chunks, text: acc };
+    return;
   }
-  chunks.push(resolved);
-  return { chunks, text: chunkToText(resolved) };
+  yield resolved;
 }
 
 function chatMessageToModelMessage(m: ChatMessage): LlmRequestMessage {
@@ -177,12 +174,17 @@ ${isError ? "Error" : "Result"}: ${body}
 </functions_result>`;
 }
 
+type ToolRunRow = { text: string; isError: boolean; detailRef?: DetailRef; awaitSessionId?: string };
+
 async function executeRegistryTool(
   context: AgentFrameworkContext,
   toolId: string,
   parameters: Record<string, unknown>,
-): Promise<{ text: string; isError: boolean }> {
-  const impl = context.tools.getTool(toolId) as
+): Promise<ToolRunRow> {
+  const normalizedId = toolId.includes("-")
+    ? toolId.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase())
+    : toolId;
+  const impl = (context.tools.getTool(toolId) ?? context.tools.getTool(normalizedId)) as
     | ((args: Record<string, unknown>) => unknown | Promise<unknown>)
     | undefined;
 
@@ -202,6 +204,15 @@ async function executeRegistryTool(
       }
       if ("result" in o) {
         return { text: typeof o.result === "string" ? o.result : JSON.stringify(o.result), isError: false };
+      }
+      const structured = extractMemeloopStructuredToolPayload(raw);
+      if (structured) {
+        return {
+          text: structured.summary,
+          isError: false,
+          detailRef: structured.detailRef,
+          awaitSessionId: structured.awaitSessionId,
+        };
       }
     }
     return { text: typeof raw === "string" ? raw : JSON.stringify(raw), isError: false };
@@ -303,8 +314,9 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
 
       const messages = await buildLlmMessages(context, input.conversationId, history);
       const request = { conversationId: input.conversationId, messages };
-      const { chunks, text: assistantText } = await streamLlm(context, request);
-      for (const c of chunks) {
+      let assistantText = "";
+      for await (const c of streamLlm(context, request)) {
+        assistantText += chunkToText(c);
         yield { type: "message", data: c };
       }
 
@@ -396,7 +408,7 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
 
       const executeWithGuards = async (
         call: (typeof pending)[0],
-      ): Promise<{ text: string; isError: boolean }> => {
+      ): Promise<ToolRunRow> => {
         const signature = `${call.toolId}:${JSON.stringify(call.parameters)}`;
         recentToolCalls.push(signature);
         const threshold = Math.max(2, opts.doomLoopThreshold ?? 3);
@@ -426,10 +438,7 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
         return executeRegistryTool(context, call.toolId, call.parameters);
       };
 
-      const persistToolResult = async (
-        call: (typeof pending)[0],
-        row: { text: string; isError: boolean },
-      ): Promise<void> => {
+      const persistToolResult = async (call: (typeof pending)[0], row: ToolRunRow): Promise<void> => {
         const lamportTool = await nextLamportClockForConversation(context.storage, input.conversationId);
         await context.storage.appendMessage({
           messageId: `${input.conversationId}:t:${call.toolId}:${Date.now().toString(36)}`,
@@ -439,6 +448,30 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
           lamportClock: lamportTool,
           role: "tool",
           content: formatToolResultMessage(call.toolId, call.parameters, row.text, row.isError),
+          detailRef: row.detailRef,
+        });
+      };
+
+      const persistTerminalAwaitCompletion = async (call: (typeof pending)[0], row: ToolRunRow): Promise<void> => {
+        const sid = row.awaitSessionId;
+        const wait = opts.waitForTerminalSession;
+        if (!sid || !wait || row.isError) return;
+        const done = await wait(sid);
+        const lamport2 = await nextLamportClockForConversation(context.storage, input.conversationId);
+        const body = truncateToolSummary(
+          `[terminal.await done] session=${sid}\nexitCode: ${done.exitCode ?? "null"}\n---\n${done.truncatedOutput}`,
+        );
+        await context.storage.appendMessage({
+          messageId: `${input.conversationId}:t:${call.toolId}:await:${Date.now().toString(36)}`,
+          conversationId: input.conversationId,
+          originNodeId: "local",
+          timestamp: Date.now(),
+          lamportClock: lamport2,
+          role: "tool",
+          content: formatToolResultMessage(call.toolId, call.parameters, body, false),
+          detailRef: row.detailRef
+            ? { ...row.detailRef, exitCode: done.exitCode ?? row.detailRef.exitCode }
+            : undefined,
         });
       };
 
@@ -449,20 +482,40 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
         for (const row of results) {
           yield {
             type: "tool" as const,
-            data: { toolId: row.call.toolId, parameters: row.call.parameters, parallel: true },
+            data: {
+              toolId: row.call.toolId,
+              parameters: row.call.parameters,
+              parallel: true,
+              result: row.text,
+              isError: row.isError,
+            },
           };
         }
         for (const row of results) {
-          await persistToolResult(row.call, { text: row.text, isError: row.isError });
+          await persistToolResult(row.call, {
+            text: row.text,
+            isError: row.isError,
+            detailRef: row.detailRef,
+          });
+        }
+        for (const row of results) {
+          await persistTerminalAwaitCompletion(row.call, row);
         }
       } else {
         for (const call of pending) {
+          const row = await executeWithGuards(call);
           yield {
             type: "tool",
-            data: { toolId: call.toolId, parameters: call.parameters, parallel: false },
+            data: {
+              toolId: call.toolId,
+              parameters: call.parameters,
+              parallel: false,
+              result: row.text,
+              isError: row.isError,
+            },
           };
-          const row = await executeWithGuards(call);
           await persistToolResult(call, row);
+          await persistTerminalAwaitCompletion(call, row);
         }
       }
 

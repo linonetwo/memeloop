@@ -7,6 +7,7 @@ import {
   createNodeServer as createNodeServerFromMemeloop,
   register,
   type ImWebhookHandler,
+  type NoiseStaticKeyPair,
   type WsAuthOptions,
 } from "memeloop";
 
@@ -27,10 +28,15 @@ export interface NodeServerOptions {
   wsAuth?: WsAuthOptions;
   /** POST /im/webhook/<channelId> */
   imWebhookHandler?: ImWebhookHandler;
+  /** P2P：Noise_XX + ChaCha 帧加密（与 CLI 默认 keypair 一致）。 */
+  noise?: {
+    staticKeyPair: NoiseStaticKeyPair;
+    prologue?: Buffer;
+  };
 }
 
 export function createNodeServer(options: NodeServerOptions): http.Server {
-  const { nodeId, rpcContext, gitProxy, wsAuth, imWebhookHandler } = options;
+  const { nodeId, rpcContext, gitProxy, wsAuth, imWebhookHandler, noise } = options;
   return createNodeServerFromMemeloop({
     nodeId,
     rpcHandler: (method, params, wsCtx) =>
@@ -38,6 +44,7 @@ export function createNodeServer(options: NodeServerOptions): http.Server {
         {
           ...rpcContext,
           notify: wsCtx?.notify,
+          pinConfirmState: wsCtx?.pinConfirmState,
         },
         method,
         params,
@@ -45,6 +52,7 @@ export function createNodeServer(options: NodeServerOptions): http.Server {
     gitHandler: gitProxy,
     wsAuth,
     imWebhookHandler,
+    noise,
   });
 }
 

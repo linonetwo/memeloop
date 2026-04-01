@@ -79,6 +79,24 @@ describe("ChatSyncEngine", () => {
     expect(vv.B).toBe(2);
   });
 
+  it("syncOnce returns when no peers", async () => {
+    const storage = {
+      upsertConversationMetadata: vi.fn(),
+      getMessages: vi.fn(),
+      insertMessagesIfAbsent: vi.fn(),
+      listConversations: vi.fn(),
+      appendMessage: vi.fn(),
+      getAttachment: vi.fn(),
+      saveAttachment: vi.fn(),
+      getAgentDefinition: vi.fn(),
+      saveAgentInstance: vi.fn(),
+      getConversationMeta: vi.fn(),
+    } as unknown as IAgentStorage;
+    const engine = new ChatSyncEngine({ nodeId: "A", storage, peers: () => [] });
+    await engine.syncOnce();
+    expect((storage.upsertConversationMetadata as any).mock.calls.length).toBe(0);
+  });
+
   it("multi-node: gossip and version vector merge (A and B sync)", async () => {
     const metaA = createConversation("conv-a", "A");
     const metaB = createConversation("conv-b", "B");
@@ -228,6 +246,35 @@ describe("ChatSyncEngine", () => {
     expect(insertMessagesIfAbsent).toHaveBeenCalledWith([expect.objectContaining({ messageId: "m-remote" })]);
   });
 
+  it("pullMissingMessages ignores peer errors and handles empty incoming", async () => {
+    const insertMessagesIfAbsent = vi.fn().mockResolvedValue(undefined);
+    const storage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      appendMessage: vi.fn().mockResolvedValue(undefined),
+      upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
+      insertMessagesIfAbsent,
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockResolvedValue(null),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockResolvedValue(null),
+    } as unknown as IAgentStorage;
+
+    const peer: ChatSyncPeer = {
+      nodeId: "B",
+      exchangeVersionVector: vi.fn().mockResolvedValue({ remoteVersion: { B: 1 }, missingForRemote: [] }),
+      pullMissingMetadata: vi.fn().mockResolvedValue([createConversation("c1", "B")]),
+      pullMissingMessages: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("boom"))
+        .mockResolvedValueOnce([]),
+    };
+    const engine = new ChatSyncEngine({ nodeId: "A", storage, peers: () => [peer] });
+    await engine.syncOnce();
+    expect(insertMessagesIfAbsent).not.toHaveBeenCalled();
+  });
+
   it("pullMissingMessages triggers saveAttachment when peer returns attachment blobs", async () => {
     const saveAttachment = vi.fn().mockResolvedValue(undefined);
     const readAttachmentData = vi.fn().mockResolvedValue(null);
@@ -298,6 +345,69 @@ describe("ChatSyncEngine", () => {
 
     expect(saveAttachment).toHaveBeenCalledWith(
       expect.objectContaining({ contentHash: "sha256:deadbeef" }),
+      expect.any(Uint8Array),
+    );
+  });
+
+  it("ensureAttachmentsFromMessages skips pull when local already has bytes, or reader missing; tries next peer on failure", async () => {
+    const saveAttachment = vi.fn().mockResolvedValue(undefined);
+    const getAttachment = vi.fn()
+      .mockResolvedValueOnce({ contentHash: "sha256:have", filename: "x", mimeType: "x", size: 1 }) // have bytes
+      .mockResolvedValueOnce({ contentHash: "sha256:noreader", filename: "x", mimeType: "x", size: 1 }) // no reader
+      .mockResolvedValueOnce(null); // need pull
+    const readAttachmentData = vi
+      .fn()
+      .mockResolvedValueOnce(new Uint8Array([1])) // have bytes
+      .mockResolvedValueOnce(null); // would be used if reader exists
+
+    const storage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      appendMessage: vi.fn().mockResolvedValue(undefined),
+      upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment,
+      saveAttachment,
+      readAttachmentData,
+      getAgentDefinition: vi.fn().mockResolvedValue(null),
+      saveAgentInstance: vi.fn().mockResolvedValue(null),
+      getConversationMeta: vi.fn().mockResolvedValue(null),
+    } as unknown as IAgentStorage;
+
+    const msg: ChatMessage = {
+      messageId: "m1",
+      conversationId: "c-att",
+      originNodeId: "B",
+      timestamp: Date.now(),
+      lamportClock: 1,
+      role: "user",
+      content: "pic",
+      attachments: [
+        { contentHash: "sha256:have", filename: "a", mimeType: "x", size: 1 },
+        { contentHash: "sha256:noreader", filename: "b", mimeType: "x", size: 1 },
+        { contentHash: "sha256:need", filename: "c", mimeType: "x", size: 1 },
+      ],
+    };
+
+    const peer1: ChatSyncPeer = {
+      nodeId: "B1",
+      exchangeVersionVector: vi.fn().mockResolvedValue({ remoteVersion: {}, missingForRemote: [] }),
+      pullMissingMetadata: vi.fn().mockResolvedValue([createConversation("c-att", "B")]),
+      pullMissingMessages: vi.fn().mockResolvedValue([msg]),
+      pullAttachmentBlob: vi.fn().mockRejectedValue(new Error("fail")),
+    };
+    const peer2: ChatSyncPeer = {
+      nodeId: "B2",
+      exchangeVersionVector: vi.fn().mockResolvedValue({ remoteVersion: {}, missingForRemote: [] }),
+      pullMissingMetadata: vi.fn().mockResolvedValue([]),
+      pullMissingMessages: vi.fn().mockResolvedValue([]),
+      pullAttachmentBlob: vi.fn().mockResolvedValue({ data: new Uint8Array([9, 9]), filename: "c", mimeType: "x", size: 0 }),
+    };
+
+    const engine = new ChatSyncEngine({ nodeId: "A", storage, peers: () => [peer1, peer2] });
+    await engine.syncOnce();
+    expect(saveAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({ contentHash: "sha256:need", size: 2 }),
       expect.any(Uint8Array),
     );
   });

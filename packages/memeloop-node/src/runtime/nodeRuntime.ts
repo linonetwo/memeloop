@@ -11,8 +11,11 @@ import {
   getBuiltinAgentDefinitions,
   type MemeLoopRuntime,
   type IAgentStorage,
+  type ILLMProvider,
   type INetworkService,
   type AgentFrameworkContext,
+  type IToolRegistry,
+  type BuiltinToolContext,
 } from "memeloop";
 
 import type { NodeConfig } from "../config";
@@ -22,43 +25,89 @@ import type { PeerConnectionManager } from "../network/peerConnectionManager";
 import { ToolRegistry } from "./toolRegistry";
 import { createRegistryLLMProvider } from "./llmAdapter";
 import { createFetchLLMProvider } from "./fetchProvider";
-import { registerTerminalTools } from "../tools/terminal";
-import { registerFileTools } from "../tools/fileSystem";
-import { registerWikiTools } from "../tools/wikiTools";
-import { registerVscodeTools } from "../tools/vscodeCli";
-import { registerGenericNodeTools } from "../tools/genericNodeTools";
+import { registerNodeEnvironmentTools } from "../tools/registerNodeEnvironmentTools";
 import { FileWikiManager, type IWikiManager } from "../knowledge/wikiManager";
 import { createPeerRpcSyncTransport } from "../network/rpcSyncTransport";
 import type { AgentDefinition } from "@memeloop/protocol";
 
+/**
+ * Optional overrides merged into `registerBuiltinTools` (peer RPC, `notifyAskQuestion`, etc.).
+ * Used by embedders (e.g. TidGi-Desktop) that do not use `PeerConnectionManager`.
+ */
+export type NodeRuntimeBuiltinToolOverrides = Pick<
+  BuiltinToolContext,
+  "getPeers" | "sendRpcToNode" | "mcpCallRemote" | "remoteAgentStreamTimeoutMs" | "notifyAskQuestion" | "localNodeId"
+>;
+
 export interface NodeRuntimeOptions {
-  config: NodeConfig;
-  /** Data directory for SQLite file */
-  dataDir: string;
+  /**
+   * YAML-derived config. Defaults to `{}` when embedding with injected `storage` / `llmProvider`.
+   * Used for `tools` allowlist/blocklist (unless `toolRegistry` is injected), `providers`, `agents`, timeouts.
+   */
+  config?: NodeConfig;
+  /**
+   * Directory for `memeloop.db` when using default SQLite storage.
+   * **Required** unless `storage` is injected.
+   */
+  dataDir?: string;
   /** Stable node id（ChatSyncEngine、sync RPC 时钟键；与 cloud 注册 id 对齐） */
   localNodeId?: string;
+  /**
+   * Replace default SQLite with an app-provided store (e.g. TidGi in-memory + wiki IPC).
+   * When set, `dataDir` is not used for storage.
+   */
+  storage?: IAgentStorage;
+  /**
+   * Replace ProviderRegistry-driven LLM with a custom provider (e.g. Desktop `generateFromAI` bridge).
+   * When set, `config.providers` is ignored unless you also register models on `providerRegistry`.
+   */
+  llmProvider?: ILLMProvider;
+  /**
+   * When using custom `llmProvider`, optional registry (defaults to empty `ProviderRegistry`).
+   * CLI mode builds this from `config.providers` when `llmProvider` is omitted.
+   */
+  providerRegistry?: ProviderRegistry;
+  /**
+   * Custom tool registry (e.g. simple Map-based). If omitted, a `ToolRegistry` is created with `config.tools` permissions.
+   */
+  toolRegistry?: IToolRegistry;
+  /**
+   * Register app-specific tools before builtins and env tools (e.g. TidGi `zx-script`).
+   */
+  configureTools?: (registry: IToolRegistry) => void;
+  /** Merged into peer fields when `peerConnectionManager` is absent */
+  builtinToolContext?: NodeRuntimeBuiltinToolOverrides;
   /** If provided, terminal tools (terminal.execute / list / respond) are registered */
   terminalManager?: ITerminalSessionManager;
   /** Base directory for file.* tools (default cwd) */
   fileBaseDir?: string;
-  /** Wiki base path (config.wikiPath); if set, knowledge.* wiki tools are registered */
+  /** Wiki base path; creates `FileWikiManager`. Ignored if `wikiManager` is set. */
   wikiBasePath?: string;
+  /** Embed: use an existing wiki manager instead of `FileWikiManager` (e.g. TidGi TiddlyWiki in worker). */
+  wikiManager?: IWikiManager;
   /**
    * 出站 peer 连接（LAN/Desktop 已 `addPeerByUrl` 后），用于 builtin：`getPeers` / `sendRpcToNode` /
-   * `mcpCallRemote` / `remoteAgent`。
+   * `mcpCallRemote` / `remoteAgent`。若存在，优先于 `builtinToolContext` 中的同名字段。
    */
   peerConnectionManager?: PeerConnectionManager;
   /** 覆盖 config.remoteAgentStreamTimeoutMs */
   remoteAgentStreamTimeoutMs?: number;
   /** 从 Wiki 加载带 MemeLoop AgentDefinition 标签的 tiddler（默认仅 default wiki） */
   wikiAgentDefinitionWikiIds?: string[];
+  /** Passed to `registerNodeEnvironmentTools` (CLI default true; Electron worker often false). */
+  includeVscodeCli?: boolean;
+  network?: INetworkService;
+  logger?: AgentFrameworkContext["logger"];
+  taskAgent?: Partial<AgentFrameworkContext["taskAgent"]>;
+  /** Share cancellation set with the host (e.g. worker `cancelAgent`). */
+  conversationCancellation?: Set<string>;
 }
 
 export interface NodeRuntimeResult {
   runtime: MemeLoopRuntime;
   storage: IAgentStorage;
   providerRegistry: ProviderRegistry;
-  toolRegistry: ToolRegistry;
+  toolRegistry: IToolRegistry;
   context: AgentFrameworkContext;
   wikiManager?: IWikiManager;
   /** 供 RPC `memeloop.agent.getDefinitions` 使用 */
@@ -76,15 +125,32 @@ const noopNetwork: INetworkService = {
   async stop() {},
 };
 
+const defaultLogger: AgentFrameworkContext["logger"] = {
+  warn: (...a: unknown[]) => console.warn("[memeloop-node]", ...a),
+  error: (...a: unknown[]) => console.error("[memeloop-node]", ...a),
+};
+
 /**
- * Build MemeLoopRuntime + SQLiteAgentStorage + ProviderRegistry + IToolRegistry
- * with tool permission allowlist/blocklist from config.
+ * Build MemeLoopRuntime + storage + LLM + IToolRegistry with optional injection for embedders (SDK).
+ *
+ * **CLI default:** pass `config` + `dataDir` → SQLite + `config.providers` + `ToolRegistry(config.tools)`.
+ *
+ * **Embed (e.g. TidGi-Desktop):** pass `storage` + `llmProvider` + optional `toolRegistry` / `configureTools` /
+ * `builtinToolContext` / `wikiManager`; `config` and `dataDir` may be omitted.
  */
 export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResult {
-  const { config, dataDir } = options;
+  const config = options.config ?? {};
 
-  const dbPath = path.join(dataDir, "memeloop.db");
-  const storage: IAgentStorage = new SQLiteAgentStorage({ filename: dbPath });
+  let storage: IAgentStorage;
+  if (options.storage) {
+    storage = options.storage;
+  } else {
+    if (!options.dataDir) {
+      throw new Error("createNodeRuntime: provide `dataDir` for SQLite storage, or inject `storage`");
+    }
+    const dbPath = path.join(options.dataDir, "memeloop.db");
+    storage = new SQLiteAgentStorage({ filename: dbPath });
+  }
 
   const builtinDefs = getBuiltinAgentDefinitions();
   const fromConfig = (config.agents ?? []).map(normalizeAgentDefinition);
@@ -105,31 +171,70 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     storage.seedAgentDefinitions(agentDefinitions);
   }
 
-  const providerRegistry = new ProviderRegistry();
-  for (const entry of config.providers ?? []) {
-    const provider = createFetchLLMProvider(entry);
-    providerRegistry.register(provider);
+  let providerRegistry: ProviderRegistry;
+  let llmProvider: ILLMProvider;
+
+  if (options.llmProvider) {
+    providerRegistry = options.providerRegistry ?? new ProviderRegistry();
+    llmProvider = options.llmProvider;
+  } else {
+    providerRegistry = options.providerRegistry ?? new ProviderRegistry();
+    for (const entry of config.providers ?? []) {
+      const provider = createFetchLLMProvider(entry);
+      providerRegistry.register(provider);
+    }
+    const defaultModelId = config.providers?.[0]?.name ?? "default";
+    llmProvider = createRegistryLLMProvider(providerRegistry, defaultModelId);
   }
-  const defaultModelId = config.providers?.[0]?.name ?? "default";
-  const llmProvider = createRegistryLLMProvider(providerRegistry, defaultModelId);
 
-  const toolRegistry = new ToolRegistry(config.tools);
+  const toolRegistry: IToolRegistry = options.toolRegistry ?? new ToolRegistry(config.tools);
 
-  const conversationCancellation = new Set<string>();
+  if (options.configureTools) {
+    options.configureTools(toolRegistry);
+  }
+
+  const conversationCancellation = options.conversationCancellation ?? new Set<string>();
+  const network = options.network ?? noopNetwork;
+  const logger = options.logger ?? defaultLogger;
+
+  const taskAgentConfig: AgentFrameworkContext["taskAgent"] = {
+    maxIterations: options.taskAgent?.maxIterations ?? 32,
+    isCancelled:
+      options.taskAgent?.isCancelled ?? ((cid: string) => conversationCancellation.has(cid)),
+    waitForTerminalSession:
+      options.taskAgent?.waitForTerminalSession ??
+      (options.terminalManager
+        ? (sessionId) =>
+            new Promise((resolve) => {
+              const mgr = options.terminalManager!;
+              const finish = (info: import("../terminal/types.js").TerminalSessionInfo) => {
+                resolve({
+                  exitCode: info.exitCode,
+                  truncatedOutput: mgr.getOutputText(sessionId, { tailChars: 12_000 }),
+                });
+              };
+              const cur = mgr.get(sessionId);
+              if (cur && cur.status !== "running") {
+                finish(cur);
+                return;
+              }
+              const off = mgr.onSessionComplete((sid, info) => {
+                if (sid !== sessionId) return;
+                off();
+                finish(info);
+              });
+            })
+        : undefined),
+  };
+
   const context: AgentFrameworkContext = {
     storage,
     llmProvider,
     tools: toolRegistry,
     syncAdapters: [],
-    network: noopNetwork,
-    logger: {
-      warn: (...a: unknown[]) => console.warn("[memeloop-node]", ...a),
-      error: (...a: unknown[]) => console.error("[memeloop-node]", ...a),
-    },
-    taskAgent: {
-      maxIterations: 32,
-      isCancelled: (cid) => conversationCancellation.has(cid),
-    },
+    network,
+    logger,
+    taskAgent: taskAgentConfig,
     conversationCancellation,
     resolveAgentDefinition: async (definitionId) => {
       const hit = definitionById.get(definitionId);
@@ -141,19 +246,24 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   const runLocalAgent = createTaskAgent(context);
   context.runTaskAgent = runLocalAgent;
 
+  const syncNodeId = (options.localNodeId ?? config.nodeId ?? "memeloop-local").trim() || "memeloop-local";
+
   const peerMgr = options.peerConnectionManager;
+  const embedBuiltin = options.builtinToolContext ?? {};
   const streamTimeout =
     options.remoteAgentStreamTimeoutMs ??
+    embedBuiltin.remoteAgentStreamTimeoutMs ??
     config.remoteAgentStreamTimeoutMs ??
     30_000;
 
   registerBuiltinTools(toolRegistry, {
     ...context,
+    localNodeId: embedBuiltin.localNodeId ?? syncNodeId,
     runLocalAgent,
-    getPeers: peerMgr ? async () => peerMgr.getPeers() : undefined,
+    getPeers: peerMgr ? async () => peerMgr.getPeers() : embedBuiltin.getPeers,
     sendRpcToNode: peerMgr
       ? (nodeId, method, params) => peerMgr.sendRpcToNode(nodeId, method, params)
-      : undefined,
+      : embedBuiltin.sendRpcToNode,
     mcpCallRemote: peerMgr
       ? async (nodeId, serverName, toolName, args) =>
           peerMgr.sendRpcToNode(nodeId, "memeloop.mcp.callTool", {
@@ -161,21 +271,23 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
             toolName,
             arguments: args,
           })
-      : undefined,
+      : embedBuiltin.mcpCallRemote,
     remoteAgentStreamTimeoutMs: streamTimeout,
+    notifyAskQuestion: embedBuiltin.notifyAskQuestion,
   });
 
-  if (options.terminalManager) {
-    registerTerminalTools(toolRegistry, options.terminalManager);
-  }
   const fileBaseResolved = options.fileBaseDir ?? process.cwd();
-  registerFileTools(toolRegistry, fileBaseResolved);
 
   let wikiManager: IWikiManager | undefined;
   let refreshWikiAgentDefinitions: (() => Promise<void>) | undefined;
-  if (options.wikiBasePath) {
+
+  if (options.wikiManager) {
+    wikiManager = options.wikiManager;
+  } else if (options.wikiBasePath) {
     wikiManager = new FileWikiManager(options.wikiBasePath);
-    registerWikiTools(toolRegistry, wikiManager, "default");
+  }
+
+  if (wikiManager) {
     const wikiIds =
       options.wikiAgentDefinitionWikiIds?.length && options.wikiAgentDefinitionWikiIds.length > 0
         ? options.wikiAgentDefinitionWikiIds
@@ -199,12 +311,18 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
       context.logger?.warn?.("wiki agent definitions load failed", e);
     });
   }
-  registerVscodeTools(toolRegistry);
-  registerGenericNodeTools(toolRegistry);
+
+  registerNodeEnvironmentTools(toolRegistry, {
+    terminalManager: options.terminalManager,
+    fileBaseDir: fileBaseResolved,
+    wikiManager,
+    wikiDefaultId: "default",
+    includeVscodeCli: options.includeVscodeCli !== false,
+    storage,
+    nodeId: syncNodeId,
+  });
 
   const runtime = createMemeLoopRuntime(context);
-
-  const syncNodeId = (options.localNodeId ?? config.nodeId ?? "memeloop-local").trim() || "memeloop-local";
   let syncEngine: ChatSyncEngine | undefined;
   if (peerMgr) {
     const transport = createPeerRpcSyncTransport((nid, method, params) =>

@@ -8,7 +8,21 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "json-summary"],
       include: ["src/**/*.ts"],
-      exclude: ["**/*.test.ts", "**/*.tsx", "**/*.jsx"],
+      exclude: [
+        "**/*.test.ts",
+        "**/*.tsx",
+        "**/*.jsx",
+        // Barrel/entry files pull in optional UI deps; behavior is covered via core unit tests.
+        "src/**/index.ts",
+        // Types-only shim
+        "src/native/react-native-shim.d.ts",
+      ],
+      thresholds: {
+        statements: 80,
+        branches: 80,
+        functions: 80,
+        lines: 80,
+      },
     },
   },
 });

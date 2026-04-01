@@ -6,7 +6,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
+import { buildMemeloopFileUri } from "@memeloop/protocol";
+
 import type { IToolRegistry } from "memeloop";
+import { MEMELOOP_STRUCTURED_TOOL_KEY } from "memeloop";
 
 const FILE_READ_ID = "file.read";
 const FILE_WRITE_ID = "file.write";
@@ -14,10 +17,19 @@ const FILE_LIST_ID = "file.list";
 const FILE_SEARCH_ID = "file.search";
 const FILE_TAIL_ID = "file.tail";
 
-export function registerFileTools(registry: IToolRegistry, baseDir?: string): void {
-  const root = baseDir ?? process.cwd();
+export interface RegisterFileToolsOptions {
+  nodeId?: string;
+}
 
-  registry.registerTool(FILE_READ_ID, (args: Record<string, unknown>) => readImpl(args, root));
+export function registerFileTools(
+  registry: IToolRegistry,
+  baseDir?: string,
+  options?: RegisterFileToolsOptions,
+): void {
+  const root = baseDir ?? process.cwd();
+  const nodeId = options?.nodeId ?? "local";
+
+  registry.registerTool(FILE_READ_ID, (args: Record<string, unknown>) => readImpl(args, root, nodeId));
   registry.registerTool(FILE_WRITE_ID, (args: Record<string, unknown>) => writeImpl(args, root));
   registry.registerTool(FILE_LIST_ID, (args: Record<string, unknown>) => listImpl(args, root));
   registry.registerTool(FILE_SEARCH_ID, (args: Record<string, unknown>) => searchImpl(args, root));
@@ -34,9 +46,15 @@ function resolvePath(p: string, root: string): string {
   return resolved;
 }
 
+/** Plan §5.2.1 / §22: persist only URI reference in structured payload — no file body in summary. */
+function fileReadSummary(relPath: string, byteLength: number, fileUri: string): string {
+  return `file.read ${relPath} (${byteLength} bytes). Full content: ${fileUri}`;
+}
+
 async function readImpl(
   args: Record<string, unknown>,
   root: string,
+  nodeId: string,
 ): Promise<unknown> {
   const p = args.path as string | undefined;
   const encoding = (args.encoding as string) ?? "utf-8";
@@ -46,7 +64,21 @@ async function readImpl(
   try {
     const full = resolvePath(p, root);
     const content = await fs.promises.readFile(full, encoding as BufferEncoding);
-    return { path: full, content, encoding };
+    const fileUri = buildMemeloopFileUri(nodeId, p);
+    const byteLength = Buffer.byteLength(content, encoding === "utf-8" ? "utf8" : "utf8");
+    return {
+      path: p,
+      encoding,
+      byteLength,
+      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+        summary: fileReadSummary(p, byteLength, fileUri),
+        detailRef: {
+          type: "file" as const,
+          fileUri,
+          nodeId,
+        },
+      },
+    };
   } catch (e) {
     return { error: String(e) };
   }
@@ -190,8 +222,12 @@ export const fileTailSchema = {
 };
 
 /** RPC `memeloop.file.*` 与本地 tool 共用实现（baseDir 为节点 fileBaseDir）。 */
-export function runFileReadRpc(args: Record<string, unknown>, root: string): Promise<unknown> {
-  return Promise.resolve(readImpl(args, root));
+export function runFileReadRpc(
+  args: Record<string, unknown>,
+  root: string,
+  nodeId: string = "local",
+): Promise<unknown> {
+  return Promise.resolve(readImpl(args, root, nodeId));
 }
 export function runFileWriteRpc(args: Record<string, unknown>, root: string): Promise<unknown> {
   return Promise.resolve(writeImpl(args, root));

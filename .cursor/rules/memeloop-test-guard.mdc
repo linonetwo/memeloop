@@ -1,0 +1,15 @@
+---
+description: MemeLoop 行为变更必须补单测
+alwaysApply: true
+---
+
+# 质量保障规则
+
+当你修改 `memeloop/` 相关的“行为代码”（IM 路由、terminal、sync、rpc、工具执行等）时：
+1. 必须新增/更新对应 `*.test.ts` 单测，覆盖关键分支/优先级/异常路径。
+2. 运行 `pnpm -C /Users/linonetwo/Desktop/repo/memeloop test:unit`（或至少覆盖对应 package 的 unit 测试）。
+
+若新增了新的 IM routing 或 `askQuestion`/pendingQuestionId 相关逻辑：
+1. 覆盖“优先级顺序”（slash -> pendingQuestionId -> 正常消息）。
+2. 覆盖“摘要渲染/隐藏大文本”的输出约束。
+
