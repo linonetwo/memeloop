@@ -5,11 +5,18 @@ import { registerToolParameterSchema } from "../schemaRegistry.js";
 
 import type { BuiltinToolContext } from "./types.js";
 import { getMcpClientToolId, mcpClientConfigSchema, mcpClientImpl } from "./mcpClient.js";
+import { getMcpForwardToolId, mcpForwardConfigSchema, mcpForwardImpl } from "./mcpForward.js";
 import { getRemoteAgentToolId, remoteAgentConfigSchema, remoteAgentImpl } from "./remoteAgent.js";
 import { getSpawnAgentToolId, spawnAgentConfigSchema, spawnAgentImpl } from "./spawnAgent.js";
 import { ASK_QUESTION_TOOL_ID, askQuestionConfigSchema, askQuestionImpl } from "./askQuestion.js";
 export { mcpClientImpl, mcpClientConfigSchema, getMcpClientToolId } from "./mcpClient.js";
-export { remoteAgentImpl, remoteAgentConfigSchema, remoteAgentListImpl, getRemoteAgentToolId } from "./remoteAgent.js";
+export { mcpForwardImpl, mcpForwardConfigSchema, getMcpForwardToolId } from "./mcpForward.js";
+export {
+  remoteAgentImpl,
+  remoteAgentConfigSchema,
+  remoteAgentListImpl,
+  getRemoteAgentToolId,
+} from "./remoteAgent.js";
 export { spawnAgentImpl, spawnAgentConfigSchema, getSpawnAgentToolId } from "./spawnAgent.js";
 export { askQuestionImpl, askQuestionConfigSchema, ASK_QUESTION_TOOL_ID } from "./askQuestion.js";
 export { resolveQuestionAnswer } from "./questionWaitRegistry.js";
@@ -21,7 +28,7 @@ export {
 } from "./imBuiltinTools.js";
 
 /**
- * Register MCP client, spawnAgent, and remoteAgent builtin tools with the registry.
+ * Register MCP client, mcpForward, spawnAgent, and remoteAgent builtin tools with the registry.
  * Call this when building AgentFrameworkContext so that getTool("mcpClient") etc. work.
  */
 export function registerBuiltinTools(registry: IToolRegistry, context: BuiltinToolContext): void {
@@ -34,23 +41,31 @@ export function registerBuiltinTools(registry: IToolRegistry, context: BuiltinTo
   } else {
     registerBuiltinPromptPlugins();
   }
-  registry.registerTool(
-    getMcpClientToolId(),
-    (args: Record<string, unknown>) => mcpClientImpl(args, context),
+  registry.registerTool(getMcpClientToolId(), (args: Record<string, unknown>) =>
+    mcpClientImpl(args, context),
   );
-  registry.registerTool(
-    getSpawnAgentToolId(),
-    (args: Record<string, unknown>) => spawnAgentImpl(args, context),
+  registry.registerTool(getMcpForwardToolId(), (args: Record<string, unknown>) =>
+    mcpForwardImpl(args, context),
   );
-  registry.registerTool(
-    getRemoteAgentToolId(),
-    (args: Record<string, unknown>) => remoteAgentImpl(args, context),
+  registry.registerTool(getSpawnAgentToolId(), (args: Record<string, unknown>) =>
+    spawnAgentImpl(args, context),
   );
-  registry.registerTool(ASK_QUESTION_TOOL_ID, (args: Record<string, unknown>) => askQuestionImpl(args, context));
+  registry.registerTool(getRemoteAgentToolId(), (args: Record<string, unknown>) =>
+    remoteAgentImpl(args, context),
+  );
+  registry.registerTool(ASK_QUESTION_TOOL_ID, (args: Record<string, unknown>) =>
+    askQuestionImpl(args, context),
+  );
 
   registerToolParameterSchema(getMcpClientToolId(), mcpClientConfigSchema, {
     displayName: "MCP Client",
-    description: "Call a tool on a remote MCP server (transparent proxy). Requires nodeId, serverName, toolName, and optional args.",
+    description:
+      "Call a tool on a remote MCP server (transparent proxy). Requires nodeId, serverName, toolName, and optional args.",
+  });
+  registerToolParameterSchema(getMcpForwardToolId(), mcpForwardConfigSchema, {
+    displayName: "MCP Forward",
+    description:
+      "Discover MCP servers and tools on connected nodes. Use action='list' for nodes with servers, action='listTools' for all available tools.",
   });
   registerToolParameterSchema(getSpawnAgentToolId(), spawnAgentConfigSchema, {
     displayName: "Spawn Agent",
@@ -58,7 +73,8 @@ export function registerBuiltinTools(registry: IToolRegistry, context: BuiltinTo
   });
   registerToolParameterSchema(getRemoteAgentToolId(), remoteAgentConfigSchema, {
     displayName: "Remote Agent",
-    description: "Create and run a sub-agent on a remote node. Requires nodeId, definitionId, message. List nodes with no args.",
+    description:
+      "Create and run a sub-agent on a remote node. Requires nodeId, definitionId, message. List nodes with no args.",
   });
   registerToolParameterSchema(ASK_QUESTION_TOOL_ID, askQuestionConfigSchema, {
     displayName: "Ask Question",

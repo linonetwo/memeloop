@@ -1,0 +1,105 @@
+import type { BuiltinToolImpl } from "./types.js";
+
+const TOOL_ID = "mcpForward";
+
+export const mcpForwardConfigSchema = {
+  type: "object",
+  properties: {
+    action: {
+      type: "string",
+      enum: ["list", "listTools"],
+      description:
+        "Action: 'list' returns nodes with MCP servers, 'listTools' returns all available MCP tools across nodes",
+    },
+  },
+} as const;
+
+interface McpServerInfo {
+  name: string;
+}
+
+interface McpToolInfo {
+  nodeId: string;
+  serverName: string;
+  name: string;
+  description?: string;
+}
+
+/**
+ * MCP forwarding tool: discover MCP servers and tools on connected nodes.
+ * - action=list: returns nodes with their MCP servers
+ * - action=listTools: returns all available MCP tools across all nodes
+ */
+export const mcpForwardImpl: BuiltinToolImpl = async (args, context) => {
+  const action = (args.action as string | undefined) ?? "list";
+  const getPeers = context.getPeers;
+  const sendRpc = context.sendRpcToNode;
+
+  if (!getPeers) {
+    return { error: "Peer list not configured (no getPeers)." };
+  }
+
+  if (!sendRpc) {
+    return { error: "Remote node RPC not configured (no sendRpcToNode)." };
+  }
+
+  const peers = await getPeers();
+  const online = peers.filter((p) => p.status === "online");
+
+  if (action === "list") {
+    // List nodes with their MCP servers
+    const result: Array<{ nodeId: string; name: string; mcpServers: McpServerInfo[] }> = [];
+
+    for (const node of online) {
+      try {
+        const response = (await sendRpc(node.identity.nodeId, "memeloop.mcp.listServers", {})) as {
+          servers?: McpServerInfo[];
+        };
+        const servers = Array.isArray(response?.servers) ? response.servers : [];
+        if (servers.length > 0) {
+          result.push({
+            nodeId: node.identity.nodeId,
+            name: node.identity.name,
+            mcpServers: servers,
+          });
+        }
+      } catch {
+        // Skip nodes that don't support MCP or fail to respond
+      }
+    }
+
+    return { nodes: result };
+  }
+
+  if (action === "listTools") {
+    // List all MCP tools across all nodes
+    const allTools: McpToolInfo[] = [];
+
+    for (const node of online) {
+      try {
+        const response = (await sendRpc(node.identity.nodeId, "memeloop.mcp.listTools", {})) as {
+          tools?: Array<{ serverName: string; name: string; description?: string }>;
+        };
+        const tools = Array.isArray(response?.tools) ? response.tools : [];
+        for (const tool of tools) {
+          allTools.push({
+            nodeId: node.identity.nodeId,
+            serverName: tool.serverName,
+            name: tool.name,
+            description: tool.description,
+          });
+        }
+      } catch {
+        // Skip nodes that don't support MCP or fail to respond
+      }
+    }
+
+    return { tools: allTools };
+  }
+
+  return { error: `Unknown action: ${action}` };
+};
+
+export function getMcpForwardToolId(): string {
+  return TOOL_ID;
+}

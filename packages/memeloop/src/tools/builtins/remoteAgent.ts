@@ -33,8 +33,12 @@ export const remoteAgentListImpl: BuiltinToolImpl = async (_args, context) => {
     };
     if (sendRpc) {
       try {
-        const defs = await sendRpc(node.identity.nodeId, "memeloop.agent.getDefinitions", {});
-        entry.definitions = Array.isArray(defs) ? defs : defs != null ? [defs] : [];
+        const response = (await sendRpc(
+          node.identity.nodeId,
+          "memeloop.agent.getDefinitions",
+          {},
+        )) as { definitions?: unknown[] };
+        entry.definitions = Array.isArray(response?.definitions) ? response.definitions : [];
       } catch {
         entry.definitions = [];
       }
@@ -62,10 +66,10 @@ export const remoteAgentImpl: BuiltinToolImpl = async (args, context) => {
   }
 
   try {
-    const createResult = await sendRpc(nodeId, "memeloop.agent.create", {
+    const createResult = (await sendRpc(nodeId, "memeloop.agent.create", {
       definitionId,
       initialMessage: message,
-    }) as { conversationId?: string };
+    })) as { conversationId?: string };
     const conversationId = createResult?.conversationId;
     if (!conversationId) {
       return { error: "Remote agent.create did not return conversationId", raw: createResult };
@@ -76,9 +80,15 @@ export const remoteAgentImpl: BuiltinToolImpl = async (args, context) => {
       message,
     });
 
-    const subscribeStream = (context as BuiltinToolContext & {
-      subscribeRemoteStream?: (nodeId: string, conversationId: string, onChunk: (chunk: unknown) => void) => () => void;
-    }).subscribeRemoteStream;
+    const subscribeStream = (
+      context as BuiltinToolContext & {
+        subscribeRemoteStream?: (
+          nodeId: string,
+          conversationId: string,
+          onChunk: (chunk: unknown) => void,
+        ) => () => void;
+      }
+    ).subscribeRemoteStream;
     const streamWaitMs = context.remoteAgentStreamTimeoutMs ?? 30_000;
     const chunks: string[] = [];
     if (subscribeStream) {
