@@ -26,10 +26,17 @@ export {
   saveNodeKeypair,
 } from "./auth/keypair.js";
 export type { NodeKeypair } from "./auth/keypair.js";
+export { CloudClient, buildRegistrationPayload } from "./auth/cloudClient.js";
+export type {
+  CloudRegisterOtpResult,
+  CloudJwtResult,
+  CloudNodeChallengeResult,
+  NodeRegistrationPayload,
+} from "./auth/cloudClient.js";
 
 // Network: node server, RPC, peer management
 export { createNodeServer, startNodeServerWithMdns } from "./network/index.js";
-export type { NodeServerOptions } from "./network/index.js";
+export type { NodeServerOptions, NodeGitHandler } from "./network/index.js";
 export { PeerConnectionManager } from "./network/index.js";
 export type { PeerConnectionManagerOptions } from "./network/index.js";
 export { handleRpc } from "./network/index.js";

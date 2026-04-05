@@ -1,4 +1,5 @@
 export { createGitProxyHandler } from "memeloop";
+export type { NodeGitHandler } from "memeloop";
 export type GitProxyOptions = {
   getBackendUrl(wikiId: string): Promise<string | null> | null;
   verifyAuth(authHeader: string | undefined): Promise<boolean>;

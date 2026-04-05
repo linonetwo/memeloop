@@ -7,6 +7,7 @@ import {
   createNodeServer as createNodeServerFromMemeloop,
   register,
   type ImWebhookHandler,
+  type NodeGitHandler,
   type NoiseStaticKeyPair,
   type WsAuthOptions,
 } from "memeloop";
@@ -17,11 +18,13 @@ export interface NodeServerOptions {
   port: number;
   nodeId: string;
   rpcContext: RpcHandlerContext;
-  /** Git proxy: getBackendUrl + verifyAuth. If not set, /git/* is 404. */
-  gitProxy?: {
-    getBackendUrl(wikiId: string): Promise<string | null> | null;
-    verifyAuth(authHeader: string | undefined): Promise<boolean>;
-  };
+  /** Git handler: either a direct NodeGitHandler or getBackendUrl + verifyAuth for HTTP reverse proxy. If not set, /git/* is 404. */
+  gitProxy?:
+    | NodeGitHandler
+    | {
+        getBackendUrl(wikiId: string): Promise<string | null> | null;
+        verifyAuth(authHeader: string | undefined): Promise<boolean>;
+      };
   /** mDNS service name */
   serviceName?: string;
   /** WebSocket: require memeloop.auth.handshake first and verify credentials */
