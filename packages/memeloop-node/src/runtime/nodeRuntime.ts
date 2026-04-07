@@ -24,7 +24,7 @@ import type { ITerminalSessionManager } from "../terminal";
 import type { PeerConnectionManager } from "../network/peerConnectionManager";
 import { ToolRegistry } from "./toolRegistry";
 import { createRegistryLLMProvider } from "./llmAdapter";
-import { createFetchLLMProvider } from "./fetchProvider";
+import { createAiSdkProvider } from "./aiSdkProvider";
 import { registerNodeEnvironmentTools } from "../tools/registerNodeEnvironmentTools";
 import { FileWikiManager, type IWikiManager } from "../knowledge/wikiManager";
 import { createPeerRpcSyncTransport } from "../network/rpcSyncTransport";
@@ -36,7 +36,12 @@ import type { AgentDefinition } from "@memeloop/protocol";
  */
 export type NodeRuntimeBuiltinToolOverrides = Pick<
   BuiltinToolContext,
-  "getPeers" | "sendRpcToNode" | "mcpCallRemote" | "remoteAgentStreamTimeoutMs" | "notifyAskQuestion" | "localNodeId"
+  | "getPeers"
+  | "sendRpcToNode"
+  | "mcpCallRemote"
+  | "remoteAgentStreamTimeoutMs"
+  | "notifyAskQuestion"
+  | "localNodeId"
 >;
 
 export interface NodeRuntimeOptions {
@@ -146,7 +151,9 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     storage = options.storage;
   } else {
     if (!options.dataDir) {
-      throw new Error("createNodeRuntime: provide `dataDir` for SQLite storage, or inject `storage`");
+      throw new Error(
+        "createNodeRuntime: provide `dataDir` for SQLite storage, or inject `storage`",
+      );
     }
     const dbPath = path.join(options.dataDir, "memeloop.db");
     storage = new SQLiteAgentStorage({ filename: dbPath });
@@ -180,7 +187,11 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   } else {
     providerRegistry = options.providerRegistry ?? new ProviderRegistry();
     for (const entry of config.providers ?? []) {
-      const provider = createFetchLLMProvider(entry);
+      const model = createAiSdkProvider(entry);
+      const provider: ILLMProvider = {
+        name: entry.name,
+        model,
+      };
       providerRegistry.register(provider);
     }
     const defaultModelId = config.providers?.[0]?.name ?? "default";
@@ -246,7 +257,8 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   const runLocalAgent = createTaskAgent(context);
   context.runTaskAgent = runLocalAgent;
 
-  const syncNodeId = (options.localNodeId ?? config.nodeId ?? "memeloop-local").trim() || "memeloop-local";
+  const syncNodeId =
+    (options.localNodeId ?? config.nodeId ?? "memeloop-local").trim() || "memeloop-local";
 
   const peerMgr = options.peerConnectionManager;
   const embedBuiltin = options.builtinToolContext ?? {};
