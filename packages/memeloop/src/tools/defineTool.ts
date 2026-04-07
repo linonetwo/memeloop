@@ -23,7 +23,7 @@ import { executeToolCallsParallel, executeToolCallsSequential } from "./parallel
 import { getActivePluginRegistry } from "./pluginRegistry.js";
 import { schemaToToolContent } from "./schemaToToolContent.js";
 import type { AIResponseContext, PromptConcatHookContext, PromptConcatTool } from "./types.js";
-import type { AgentInstanceMessage } from "../types.js";
+import type { ChatMessage } from "@memeloop/protocol";
 
 const MAX_TOOL_RESULT_CHARS = 32_000;
 
@@ -47,7 +47,9 @@ export type {
 export function defineTool<
   TConfigSchema extends z.ZodType,
   TLLMToolSchemas extends Record<string, z.ZodType> = Record<string, z.ZodType>,
->(definition: ToolDefinition<TConfigSchema, TLLMToolSchemas>): {
+>(
+  definition: ToolDefinition<TConfigSchema, TLLMToolSchemas>,
+): {
   tool: PromptConcatTool;
   toolId: string;
   configSchema: TConfigSchema;
@@ -55,14 +57,22 @@ export function defineTool<
   displayName: string;
   description: string;
 } {
-  const { toolId, configSchema, llmToolSchemas, onProcessPrompts, onResponseComplete, onPostProcess } = definition;
+  const {
+    toolId,
+    configSchema,
+    llmToolSchemas,
+    onProcessPrompts,
+    onResponseComplete,
+    onPostProcess,
+  } = definition;
   const parameterKey = `${toolId}Param`;
 
   const tool: PromptConcatTool = (hooks) => {
     if (onProcessPrompts) {
       hooks.processPrompts.tapAsync(`${toolId}-processPrompts`, async (context, callback) => {
         try {
-          const { toolConfig, prompts, messages, agentFrameworkContext } = context as PromptConcatHookContext;
+          const { toolConfig, prompts, messages, agentFrameworkContext } =
+            context as PromptConcatHookContext;
 
           if (toolConfig.toolId !== toolId) {
             callback();
@@ -89,17 +99,27 @@ export function defineTool<
             messages,
             agentFrameworkContext,
 
-            findPrompt: (id: string) => findPromptById(prompts as Parameters<typeof findPromptById>[0], id),
+            findPrompt: (id: string) =>
+              findPromptById(prompts as Parameters<typeof findPromptById>[0], id),
 
             injectToolList: (options: InjectToolListOptions) => {
-              const target = findPromptById(prompts as Parameters<typeof findPromptById>[0], options.targetId);
+              const target = findPromptById(
+                prompts as Parameters<typeof findPromptById>[0],
+                options.targetId,
+              );
               if (!target) {
-                logger.warn(`Target prompt not found for tool list injection`, { targetId: options.targetId, toolId });
+                logger.warn(`Target prompt not found for tool list injection`, {
+                  targetId: options.targetId,
+                  toolId,
+                });
                 return;
               }
 
-              const schemas = options.toolSchemas ?? (llmToolSchemas ? Object.values(llmToolSchemas) : []);
-              const toolContent = schemas.map((schema) => schemaToToolContent(schema as z.ZodType)).join("\n\n");
+              const schemas =
+                options.toolSchemas ?? (llmToolSchemas ? Object.values(llmToolSchemas) : []);
+              const toolContent = schemas
+                .map((schema) => schemaToToolContent(schema as z.ZodType))
+                .join("\n\n");
 
               const pluginIndex = (context as PromptConcatHookContext).pluginIndex;
               const source = pluginIndex !== undefined ? ["plugins", toolConfig.id] : undefined;
@@ -125,9 +145,15 @@ export function defineTool<
             },
 
             injectContent: (options: InjectContentOptions) => {
-              const target = findPromptById(prompts as Parameters<typeof findPromptById>[0], options.targetId);
+              const target = findPromptById(
+                prompts as Parameters<typeof findPromptById>[0],
+                options.targetId,
+              );
               if (!target) {
-                logger.warn(`Target prompt not found for content injection`, { targetId: options.targetId, toolId });
+                logger.warn(`Target prompt not found for content injection`, {
+                  targetId: options.targetId,
+                  toolId,
+                });
                 return;
               }
 
@@ -135,7 +161,9 @@ export function defineTool<
               const source = pluginIndex !== undefined ? ["plugins", toolConfig.id] : undefined;
 
               const contentPrompt: IPrompt = {
-                id: options.id ?? `${toolId}-content-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                id:
+                  options.id ??
+                  `${toolId}-content-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                 text: options.content,
                 caption: options.caption ?? "Injected Content",
                 enabled: true,
@@ -167,15 +195,23 @@ export function defineTool<
     if (onResponseComplete) {
       hooks.responseComplete.tapAsync(`${toolId}-responseComplete`, async (context, callback) => {
         try {
-          const { agentFrameworkContext, response, agentFrameworkConfig, requestId, toolConfig: directToolConfig } =
-            context as AIResponseContext & {
-              toolConfig?: PromptConcatHookContext["toolConfig"];
-              actions?: { yieldNextRoundTo?: "human" | "self" };
-            };
+          const {
+            agentFrameworkContext,
+            response,
+            agentFrameworkConfig,
+            requestId,
+            toolConfig: directToolConfig,
+          } = context as AIResponseContext & {
+            toolConfig?: PromptConcatHookContext["toolConfig"];
+            actions?: { yieldNextRoundTo?: "human" | "self" };
+          };
 
-          const configuredToolConfig = agentFrameworkConfig?.plugins?.find((p) => p.toolId === toolId);
+          const configuredToolConfig = agentFrameworkConfig?.plugins?.find(
+            (p) => p.toolId === toolId,
+          );
           const ourToolConfig =
-            configuredToolConfig ?? (directToolConfig?.toolId === toolId ? directToolConfig : undefined);
+            configuredToolConfig ??
+            (directToolConfig?.toolId === toolId ? directToolConfig : undefined);
 
           if (!ourToolConfig) {
             callback();
@@ -232,7 +268,9 @@ export function defineTool<
 
             executeToolCall: async <TToolName extends keyof TLLMToolSchemas>(
               toolName: TToolName,
-              executor: (parameters: z.infer<TLLMToolSchemas[TToolName]>) => Promise<ToolExecutionResult>,
+              executor: (
+                parameters: z.infer<TLLMToolSchemas[TToolName]>,
+              ) => Promise<ToolExecutionResult>,
             ): Promise<boolean> => {
               if (!toolCall || toolCall.toolId !== toolName) {
                 return false;
@@ -247,8 +285,14 @@ export function defineTool<
               try {
                 const validatedParameters = toolSchema.parse(toolCall.parameters);
 
-                const approvalConfig = ourToolConfig.approval as import("./types.js").ToolApprovalConfig | undefined;
-                const decision = evaluateApproval(approvalConfig, String(toolName), validatedParameters as Record<string, unknown>);
+                const approvalConfig = ourToolConfig.approval as
+                  | import("./types.js").ToolApprovalConfig
+                  | undefined;
+                const decision = evaluateApproval(
+                  approvalConfig,
+                  String(toolName),
+                  validatedParameters as Record<string, unknown>,
+                );
                 if (decision === "deny") {
                   handlerContext.addToolResult({
                     toolName: String(toolName),
@@ -290,7 +334,9 @@ export function defineTool<
                 handlerContext.addToolResult({
                   toolName: toolName as string,
                   parameters: validatedParameters,
-                  result: result.success ? (result.data ?? "Success") : (result.error ?? "Unknown error"),
+                  result: result.success
+                    ? (result.data ?? "Success")
+                    : (result.error ?? "Unknown error"),
                   isError: !result.success,
                   duration: toolResultDuration,
                 });
@@ -353,13 +399,14 @@ Parameters: ${JSON.stringify(options.parameters)}
 ${options.isError ? "Error" : "Result"}: ${resultContent}
 </functions_result>`;
 
-              const toolResultMessage: AgentInstanceMessage = {
-                id: `tool-result-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                agentId: agentFrameworkContext.agent.id,
+              const toolResultMessage: ChatMessage = {
+                messageId: `tool-result-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                conversationId: agentFrameworkContext.agent.id,
+                originNodeId: "local",
+                timestamp: now.getTime(),
+                lamportClock: 0,
                 role: "tool",
                 content: toolResultText,
-                created: now,
-                modified: now,
                 duration: options.duration ?? 1,
                 metadata: {
                   isToolResult: true,
@@ -374,10 +421,15 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
               toolResultMessage.metadata = { ...toolResultMessage.metadata, isPersisted: true };
               agentFrameworkContext.agent.messages.push(toolResultMessage);
 
-              const aiMessages = agentFrameworkContext.agent.messages.filter((m) => m.role === "assistant");
+              const aiMessages = agentFrameworkContext.agent.messages.filter(
+                (m) => m.role === "assistant",
+              );
               if (aiMessages.length > 0) {
                 const latestAiMessage = aiMessages[aiMessages.length - 1];
-                if (latestAiMessage.content === response.content && !latestAiMessage.metadata?.containsToolCall) {
+                if (
+                  latestAiMessage.content === response.content &&
+                  !latestAiMessage.metadata?.containsToolCall
+                ) {
                   latestAiMessage.duration = 1;
                   latestAiMessage.metadata = {
                     ...latestAiMessage.metadata,
@@ -389,12 +441,15 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                   if (persist) {
                     void (async () => {
                       try {
-                        if (!latestAiMessage.created) latestAiMessage.created = new Date();
                         await persist(latestAiMessage);
                       } catch (error) {
-                        logger.warn("Failed to persist AI message with tool call", { error, messageId: latestAiMessage.id });
-                        latestAiMessage.metadata = { ...latestAiMessage.metadata, isPersisted: false };
+                        logger.warn("Failed to persist AI message with tool call", {
+                          error,
+                          messageId: latestAiMessage.messageId,
+                        });
                       }
+                    })();
+                  }
                     })();
                   }
                 }
@@ -405,8 +460,14 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                   try {
                     await persist(toolResultMessage);
                   } catch (error) {
-                    logger.warn("Failed to persist tool result", { error, messageId: toolResultMessage.id });
-                    toolResultMessage.metadata = { ...toolResultMessage.metadata, isPersisted: false };
+                    logger.warn("Failed to persist tool result", {
+                      error,
+                      messageId: toolResultMessage.id,
+                    });
+                    toolResultMessage.metadata = {
+                      ...toolResultMessage.metadata,
+                      isPersisted: false,
+                    };
                   }
                 })();
               }
@@ -430,7 +491,9 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
 
             executeAllMatchingToolCalls: async <TToolName extends keyof TLLMToolSchemas>(
               toolName: TToolName,
-              executor: (parameters: z.infer<TLLMToolSchemas[TToolName]>) => Promise<ToolExecutionResult>,
+              executor: (
+                parameters: z.infer<TLLMToolSchemas[TToolName]>,
+              ) => Promise<ToolExecutionResult>,
               options?: { timeoutMs?: number },
             ): Promise<number> => {
               const matchingCalls = allCalls.filter((call) => call.toolId === toolName);
@@ -451,8 +514,14 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                 timeoutMs?: number;
               }> = [];
 
-              const approvalConfig = ourToolConfig.approval as import("./types.js").ToolApprovalConfig | undefined;
-              const batchDecision = evaluateApproval(approvalConfig, String(toolName), matchingCalls[0]?.parameters ?? {});
+              const approvalConfig = ourToolConfig.approval as
+                | import("./types.js").ToolApprovalConfig
+                | undefined;
+              const batchDecision = evaluateApproval(
+                approvalConfig,
+                String(toolName),
+                matchingCalls[0]?.parameters ?? {},
+              );
               if (batchDecision === "deny") {
                 for (const call of matchingCalls) {
                   handlerContext.addToolResult({
@@ -472,7 +541,10 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                   approvalId,
                   agentId: agentFrameworkContext.agent.id,
                   toolName: String(toolName),
-                  parameters: { _batchSize: matchingCalls.length, _firstCallParams: matchingCalls[0]?.parameters },
+                  parameters: {
+                    _batchSize: matchingCalls.length,
+                    _firstCallParams: matchingCalls[0]?.parameters,
+                  },
                   created: new Date(),
                 });
                 if (userDecision === "deny") {
@@ -525,7 +597,8 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
 
               for (const result of results) {
                 const isError =
-                  result.status !== "fulfilled" || (result.result !== undefined && !result.result.success);
+                  result.status !== "fulfilled" ||
+                  (result.result !== undefined && !result.result.success);
                 const resultText =
                   result.status === "timeout"
                     ? (result.error ?? "Tool execution timed out")
@@ -572,7 +645,8 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
     if (onPostProcess) {
       hooks.postProcess.tapAsync(`${toolId}-postProcess`, async (context, callback) => {
         try {
-          const { toolConfig, prompts, messages, agentFrameworkContext, llmResponse, responses } = context as any;
+          const { toolConfig, prompts, messages, agentFrameworkContext, llmResponse, responses } =
+            context as any;
 
           if (toolConfig.toolId !== toolId) {
             callback();
@@ -601,7 +675,8 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
             llmResponse,
             responses,
 
-            findPrompt: (id: string) => findPromptById(prompts as Parameters<typeof findPromptById>[0], id),
+            findPrompt: (id: string) =>
+              findPromptById(prompts as Parameters<typeof findPromptById>[0], id),
 
             injectToolList: () => {
               logger.warn("injectToolList is not recommended in postProcess phase");

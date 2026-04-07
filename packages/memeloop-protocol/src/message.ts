@@ -1,6 +1,6 @@
 import type { AttachmentRef } from "./attachment.js";
 
-export type ChatRole = "user" | "assistant" | "tool";
+export type ChatRole = "user" | "assistant" | "tool" | "agent" | "error";
 
 export interface ToolCall {
   id: string;
@@ -36,5 +36,14 @@ export interface ChatMessage {
   attachments?: AttachmentRef[];
   /** Summary lives in `content`; full payload fetched via detail ref (plan §5.2.1). */
   detailRef?: DetailRef;
+  /** Reasoning/thinking content (from AgentInstanceMessage unification) */
+  reasoning_content?: string;
+  /** Content MIME type (from AgentInstanceMessage unification) */
+  contentType?: string;
+  /** Whether message should be hidden in UI (from AgentInstanceMessage unification) */
+  hidden?: boolean;
+  /** Message processing duration in ms (from AgentInstanceMessage unification) */
+  duration?: number | null;
+  /** Additional metadata (from AgentInstanceMessage unification) */
+  metadata?: Record<string, unknown>;
 }
-

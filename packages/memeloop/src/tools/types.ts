@@ -3,11 +3,12 @@
  */
 import type { ToolCallingMatch } from "../prompt/responsePatternUtility.js";
 import type { IPrompt } from "../prompt/types.js";
-import type { AgentFrameworkContext, AgentInstanceMessage } from "../types.js";
+import type { AgentFrameworkContext } from "../types.js";
+import type { ChatMessage } from "@memeloop/protocol";
 
 /** 供 defineTool / 审批使用：带 `agent.messages` 的上下文 */
 export type DefineToolAgentFrameworkContext = AgentFrameworkContext & {
-  agent: { id: string; messages: AgentInstanceMessage[] };
+  agent: { id: string; messages: ChatMessage[] };
 };
 
 export type ToolApprovalMode = "auto" | "confirm";
@@ -54,7 +55,7 @@ export interface FrameworkPluginToolConfig {
 }
 
 export interface PromptConcatHookContext extends BaseToolContext {
-  messages: AgentInstanceMessage[];
+  messages: ChatMessage[];
   prompts: IPrompt[];
   toolConfig: FrameworkPluginToolConfig;
   pluginIndex?: number;

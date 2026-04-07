@@ -6,19 +6,27 @@ import { promptConcatStream } from "../prompt/promptConcat.js";
 import { responseConcat } from "../prompt/responseConcat.js";
 import type { AgentFrameworkContext } from "../types.js";
 import { nextLamportClockForConversation } from "../storage/nextLamport.js";
-import { createHooksWithPlugins, resolvePromptPluginMap, runResponseCompleteHooks } from "../tools/pluginRegistry.js";
+import {
+  createHooksWithPlugins,
+  resolvePromptPluginMap,
+  runResponseCompleteHooks,
+} from "../tools/pluginRegistry.js";
 import { requestApproval } from "../tools/approval.js";
 import type { DefineToolAgentFrameworkContext } from "../tools/types.js";
-import { extractMemeloopStructuredToolPayload, truncateToolSummary } from "../tools/structuredToolResult.js";
-import { agentInstanceMessageToChatMessage, chatMessagesToAgentMessages } from "./agentMessageBridge.js";
+import {
+  extractMemeloopStructuredToolPayload,
+  truncateToolSummary,
+} from "../tools/structuredToolResult.js";
 
 export type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "./taskAgentContract.js";
 import type { TaskAgentGenerator, TaskAgentInput } from "./taskAgentContract.js";
 
-const ABSOLUTE_MAX_ITERATIONS = 256;
+const DEFAULT_MAX_ITERATIONS = 256;
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
-  return value != null && typeof (value as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function";
+  return (
+    value != null && typeof (value as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function"
+  );
 }
 
 type LlmRequestMessage = { role: "system" | "user" | "assistant" | "tool"; content: unknown };
@@ -45,7 +53,10 @@ function resolveToolPermission(
   return scoped?.default ?? global?.default ?? "allow";
 }
 
-function compactHistory(history: ChatMessage[], opts: AgentFrameworkContext["taskAgent"]): ChatMessage[] {
+function compactHistory(
+  history: ChatMessage[],
+  opts: AgentFrameworkContext["taskAgent"],
+): ChatMessage[] {
   const maxMessages = opts?.contextCompaction?.maxMessages ?? 0;
   if (maxMessages <= 0 || history.length <= maxMessages) return history;
   const dropped = history.length - maxMessages;
@@ -107,7 +118,10 @@ async function resolveAgentDefinitionModel(
   return context.storage.getAgentDefinition(definitionId);
 }
 
-async function inferDefinitionId(storage: AgentFrameworkContext["storage"], conversationId: string): Promise<string> {
+async function inferDefinitionId(
+  storage: AgentFrameworkContext["storage"],
+  conversationId: string,
+): Promise<string> {
   try {
     const meta = await storage.getConversationMeta(conversationId);
     if (meta?.definitionId) return meta.definitionId;
@@ -160,13 +174,21 @@ async function buildLlmMessages(
 
   const systemText = typeof def?.systemPrompt === "string" ? def.systemPrompt.trim() : "";
   if (systemText.length > 0) {
-    return [{ role: "system", content: systemText }, ...historyForPrompt.map(chatMessageToModelMessage)];
+    return [
+      { role: "system", content: systemText },
+      ...historyForPrompt.map(chatMessageToModelMessage),
+    ];
   }
 
   return historyForPrompt.map(chatMessageToModelMessage);
 }
 
-function formatToolResultMessage(toolName: string, parameters: Record<string, unknown>, body: string, isError: boolean): string {
+function formatToolResultMessage(
+  toolName: string,
+  parameters: Record<string, unknown>,
+  body: string,
+  isError: boolean,
+): string {
   return `<functions_result>
 Tool: ${toolName}
 Parameters: ${JSON.stringify(parameters)}
@@ -174,7 +196,12 @@ ${isError ? "Error" : "Result"}: ${body}
 </functions_result>`;
 }
 
-type ToolRunRow = { text: string; isError: boolean; detailRef?: DetailRef; awaitSessionId?: string };
+type ToolRunRow = {
+  text: string;
+  isError: boolean;
+  detailRef?: DetailRef;
+  awaitSessionId?: string;
+};
 
 async function executeRegistryTool(
   context: AgentFrameworkContext,
@@ -203,7 +230,10 @@ async function executeRegistryTool(
         return { text: o.error, isError: true };
       }
       if ("result" in o) {
-        return { text: typeof o.result === "string" ? o.result : JSON.stringify(o.result), isError: false };
+        return {
+          text: typeof o.result === "string" ? o.result : JSON.stringify(o.result),
+          isError: false,
+        };
       }
       const structured = extractMemeloopStructuredToolPayload(raw);
       if (structured) {
@@ -242,7 +272,8 @@ function toolCallHandledInAgentMessages(
   return after.some(
     (m) =>
       m.role === "tool" &&
-      (m.metadata?.toolId === call.toolId || (typeof m.content === "string" && m.content.includes(`Tool: ${call.toolId}`))),
+      (m.metadata?.toolId === call.toolId ||
+        (typeof m.content === "string" && m.content.includes(`Tool: ${call.toolId}`))),
   );
 }
 
@@ -252,20 +283,23 @@ function toolCallHandledInAgentMessages(
  * - defineTool：`createHooksWithPlugins` + `responseComplete` + `responseConcat`（postProcess）
  * - 回退：`IToolRegistry` 执行未被插件处理的 tool 调用
  */
-export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAgentInput) => TaskAgentGenerator {
+export function createTaskAgent(
+  context: AgentFrameworkContext,
+): (input: TaskAgentInput) => TaskAgentGenerator {
   return async function* taskAgent(input: TaskAgentInput): TaskAgentGenerator {
     const opts = context.taskAgent ?? {};
     const enableToolLoop = opts.enableToolLoop !== false;
     const fallbackRegistry = opts.fallbackRegistryTools !== false;
     const maxIterations =
       opts.maxIterations != null && opts.maxIterations > 0
-        ? Math.min(opts.maxIterations, ABSOLUTE_MAX_ITERATIONS)
-        : opts.maxIterations === 0
-          ? ABSOLUTE_MAX_ITERATIONS
-          : 32;
+        ? opts.maxIterations
+        : DEFAULT_MAX_ITERATIONS;
 
     const now = Date.now();
-    const lamportClock = await nextLamportClockForConversation(context.storage, input.conversationId);
+    const lamportClock = await nextLamportClockForConversation(
+      context.storage,
+      input.conversationId,
+    );
     const userMessage: ChatMessage = {
       messageId: `${input.conversationId}:${now.toString(36)}`,
       conversationId: input.conversationId,
@@ -285,20 +319,23 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
       iteration++;
 
       if (opts.isCancelled?.(input.conversationId)) {
-        yield { type: "thinking", data: { status: "cancelled", conversationId: input.conversationId } };
+        yield {
+          type: "thinking",
+          data: { status: "cancelled", conversationId: input.conversationId },
+        };
         return;
       }
 
-      const rawHistory = await context.storage.getMessages(input.conversationId, { mode: "full-content" });
+      const rawHistory = await context.storage.getMessages(input.conversationId, {
+        mode: "full-content",
+      });
       const history = compactHistory(rawHistory, opts);
-      const agentMessages = chatMessagesToAgentMessages(input.conversationId, history);
 
       const hookCtx: DefineToolAgentFrameworkContext = {
         ...context,
-        agent: { id: input.conversationId, messages: agentMessages },
+        agent: { id: input.conversationId, messages: history },
         persistAgentMessage: async (m) => {
-          const cm = await agentInstanceMessageToChatMessage(context.storage, input.conversationId, "local", m);
-          await context.storage.appendMessage(cm);
+          await context.storage.appendMessage(m);
         },
       };
 
@@ -327,34 +364,42 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
         | undefined;
       const hasPlugins = Boolean(fw?.plugins && Array.isArray(fw.plugins) && fw.plugins.length > 0);
 
-      const assistantAgentMsg: import("../types.js").AgentInstanceMessage = {
-        id: `${input.conversationId}:a:${Date.now().toString(36)}`,
-        agentId: input.conversationId,
+      const assistantMessage: ChatMessage = {
+        messageId: `${input.conversationId}:a:${Date.now().toString(36)}`,
+        conversationId: input.conversationId,
+        originNodeId: "local",
+        timestamp: Date.now(),
+        lamportClock: await nextLamportClockForConversation(context.storage, input.conversationId),
         role: "assistant",
         content: assistantText,
-        created: new Date(),
-        modified: new Date(),
       };
-      hookCtx.agent.messages.push(assistantAgentMsg);
-      await hookCtx.persistAgentMessage?.(assistantAgentMsg);
+      hookCtx.agent.messages.push(assistantMessage);
+      await hookCtx.persistAgentMessage?.(assistantMessage);
 
       const { calls, parallel } = matchAllToolCallings(assistantText);
 
       if (hasPlugins && fw) {
-        const { hooks } = await createHooksWithPlugins(fw as { plugins: Array<{ toolId: string }> }, {
-          pluginRegistry: resolvePromptPluginMap(context),
-        });
+        const { hooks } = await createHooksWithPlugins(
+          fw as { plugins: Array<{ toolId: string }> },
+          {
+            pluginRegistry: resolvePromptPluginMap(context),
+          },
+        );
         const rcPayload: {
           agentFrameworkContext: DefineToolAgentFrameworkContext;
           response: { status: "done"; content: string };
-          agentFrameworkConfig: { plugins?: import("../tools/types.js").FrameworkPluginToolConfig[] };
+          agentFrameworkConfig: {
+            plugins?: import("../tools/types.js").FrameworkPluginToolConfig[];
+          };
           requestId: undefined;
           toolConfig: import("../tools/types.js").FrameworkPluginToolConfig;
           actions?: { yieldNextRoundTo?: "human" | "self" };
         } = {
           agentFrameworkContext: hookCtx,
           response: { status: "done", content: assistantText },
-          agentFrameworkConfig: fw as { plugins?: import("../tools/types.js").FrameworkPluginToolConfig[] },
+          agentFrameworkConfig: fw as {
+            plugins?: import("../tools/types.js").FrameworkPluginToolConfig[];
+          },
           requestId: undefined,
           toolConfig: { id: "_memeloop", toolId: "_memeloop" },
           actions: {},
@@ -393,7 +438,9 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
         return;
       }
 
-      const pending = calls.filter((c) => !toolCallHandledInAgentMessages(hookCtx.agent.messages, assistantText, c));
+      const pending = calls.filter(
+        (c) => !toolCallHandledInAgentMessages(hookCtx.agent.messages, assistantText, c),
+      );
 
       if (pending.length === 0) {
         if (hasPlugins && calls.length > 0) {
@@ -406,9 +453,7 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
         continue;
       }
 
-      const executeWithGuards = async (
-        call: (typeof pending)[0],
-      ): Promise<ToolRunRow> => {
+      const executeWithGuards = async (call: (typeof pending)[0]): Promise<ToolRunRow> => {
         const signature = `${call.toolId}:${JSON.stringify(call.parameters)}`;
         recentToolCalls.push(signature);
         const threshold = Math.max(2, opts.doomLoopThreshold ?? 3);
@@ -438,8 +483,14 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
         return executeRegistryTool(context, call.toolId, call.parameters);
       };
 
-      const persistToolResult = async (call: (typeof pending)[0], row: ToolRunRow): Promise<void> => {
-        const lamportTool = await nextLamportClockForConversation(context.storage, input.conversationId);
+      const persistToolResult = async (
+        call: (typeof pending)[0],
+        row: ToolRunRow,
+      ): Promise<void> => {
+        const lamportTool = await nextLamportClockForConversation(
+          context.storage,
+          input.conversationId,
+        );
         await context.storage.appendMessage({
           messageId: `${input.conversationId}:t:${call.toolId}:${Date.now().toString(36)}`,
           conversationId: input.conversationId,
@@ -452,12 +503,18 @@ export function createTaskAgent(context: AgentFrameworkContext): (input: TaskAge
         });
       };
 
-      const persistTerminalAwaitCompletion = async (call: (typeof pending)[0], row: ToolRunRow): Promise<void> => {
+      const persistTerminalAwaitCompletion = async (
+        call: (typeof pending)[0],
+        row: ToolRunRow,
+      ): Promise<void> => {
         const sid = row.awaitSessionId;
         const wait = opts.waitForTerminalSession;
         if (!sid || !wait || row.isError) return;
         const done = await wait(sid);
-        const lamport2 = await nextLamportClockForConversation(context.storage, input.conversationId);
+        const lamport2 = await nextLamportClockForConversation(
+          context.storage,
+          input.conversationId,
+        );
         const body = truncateToolSummary(
           `[terminal.await done] session=${sid}\nexitCode: ${done.exitCode ?? "null"}\n---\n${done.truncatedOutput}`,
         );

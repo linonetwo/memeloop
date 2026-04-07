@@ -81,12 +81,16 @@ export interface MemeLoopLogger {
   error?(msg: string, ...args: unknown[]): void;
 }
 
+/**
+ * LLM Provider interface - now compatible with Vercel AI SDK's LanguageModelV1.
+ * The `model` field holds the actual LanguageModelV1 instance from @ai-sdk/openai, @ai-sdk/anthropic, etc.
+ */
 export interface ILLMProvider {
   name: string;
-  /**
-   * 统一的 chat completion 接口（后续对接 Vercel AI SDK）。
-   */
-  chat(request: unknown): AsyncIterable<unknown> | Promise<unknown>;
+  /** LanguageModelV1 instance from Vercel AI SDK (e.g., from createOpenAI or createAnthropic) */
+  model: unknown; // Type as 'unknown' to avoid requiring 'ai' package as hard dependency
+  /** @deprecated Legacy chat method - use streamText/generateText from 'ai' package instead */
+  chat?(request: unknown): AsyncIterable<unknown> | Promise<unknown>;
 }
 
 export interface IToolRegistry {
@@ -97,7 +101,10 @@ export interface IToolRegistry {
    * Prompt-concat 插件表（defineTool 注册的 `PromptConcatTool`），按运行时隔离。
    * 未实现时回退到进程级默认注册表（见 pluginRegistry）。
    */
-  getPromptPlugins?: () => Map<string, (hooks: import("./tools/types.js").PromptConcatHooks) => void>;
+  getPromptPlugins?: () => Map<
+    string,
+    (hooks: import("./tools/types.js").PromptConcatHooks) => void
+  >;
 }
 
 export interface IChatSyncAdapter {
@@ -169,9 +176,9 @@ export interface AgentFrameworkContext {
   /**
    * defineTool / TidGi 兼容：当前轮次的 agent 视图（`agent.messages` 与 `ChatMessage` 由 TaskAgent 同步）。
    */
-  agent?: { id: string; messages: AgentInstanceMessage[] };
-  /** 将 `AgentInstanceMessage` 持久化为协议 `ChatMessage`（可选，由 runtime 注入） */
-  persistAgentMessage?: (message: AgentInstanceMessage) => Promise<void>;
+  agent?: { id: string; messages: ChatMessage[] };
+  /** 将 `ChatMessage` 持久化（可选，由 runtime 注入） */
+  persistAgentMessage?: (message: ChatMessage) => Promise<void>;
   /**
    * 由 `createMemeLoopRuntime` 写入取消标记，`taskAgent.isCancelled` 应与此集合一致（如 memeloop-node）。
    */
@@ -195,36 +202,19 @@ export type AgentInstanceState =
 
 export interface AgentInstanceLatestStatus {
   state: AgentInstanceState;
-  message?: AgentInstanceMessage;
+  message?: ChatMessage;
   created?: Date;
   modified?: Date;
 }
 
-export interface AgentInstanceMessage {
-  id: string;
-  agentId: string;
-  role: "user" | "assistant" | "agent" | "tool" | "error";
-  content: string;
-  reasoning_content?: string;
-  contentType?:
-    | "text/plain"
-    | "text/markdown"
-    | "text/html"
-    | "application/json"
-    | "application/json+ndjson"
-    | string;
-  created?: Date;
-  modified?: Date;
-  metadata?: Record<string, unknown>;
-  hidden?: boolean;
-  duration?: number | null;
-}
+/** @deprecated Use ChatMessage from @memeloop/protocol instead */
+export type AgentInstanceMessage = ChatMessage;
 
 export interface AgentInstanceModel extends Omit<AgentDefinition, "name"> {
   agentDefId: string;
   name?: string;
   agentFrameworkConfig?: Record<string, unknown>;
-  messages: AgentInstanceMessage[];
+  messages: ChatMessage[];
   status: AgentInstanceLatestStatus;
   created: Date;
   modified?: Date;
@@ -251,6 +241,3 @@ export function createInstanceDeltaFromDefinition(
   }
   return delta as Partial<AgentDefinition>;
 }
-
-
-

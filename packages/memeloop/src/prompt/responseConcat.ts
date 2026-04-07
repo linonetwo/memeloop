@@ -3,9 +3,17 @@
  */
 import type { ToolCallingMatch } from "./responsePatternUtility.js";
 import type { IPrompt } from "./types.js";
-import { createAgentFrameworkHooks, resolvePromptPluginMap, runPostProcessHooks } from "../tools/pluginRegistry.js";
-import type { AgentResponse, DefineToolAgentFrameworkContext, FrameworkPluginToolConfig } from "../tools/types.js";
-import type { AgentInstanceMessage } from "../types.js";
+import {
+  createAgentFrameworkHooks,
+  resolvePromptPluginMap,
+  runPostProcessHooks,
+} from "../tools/pluginRegistry.js";
+import type {
+  AgentResponse,
+  DefineToolAgentFrameworkContext,
+  FrameworkPluginToolConfig,
+} from "../tools/types.js";
+import type { ChatMessage } from "@memeloop/protocol";
 import type { YieldNextRoundTarget } from "../tools/types.js";
 
 function cloneResponses(responses: AgentResponse[]): AgentResponse[] {
@@ -16,7 +24,7 @@ export async function responseConcat(
   agentFrameworkConfig: { response?: AgentResponse[]; plugins?: FrameworkPluginToolConfig[] },
   llmResponse: string,
   agentFrameworkContext: DefineToolAgentFrameworkContext,
-  messages: AgentInstanceMessage[],
+  messages: ChatMessage[],
 ): Promise<{
   processedResponse: string;
   yieldNextRoundTo?: YieldNextRoundTarget;
@@ -25,9 +33,9 @@ export async function responseConcat(
   const responses: AgentResponse[] = Array.isArray(agentFrameworkConfig?.response)
     ? cloneResponses(agentFrameworkConfig.response as AgentResponse[])
     : [];
-  const toolConfigs = (Array.isArray(agentFrameworkConfig.plugins) ? agentFrameworkConfig.plugins : []).filter(
-    (t) => t.enabled !== false,
-  );
+  const toolConfigs = (
+    Array.isArray(agentFrameworkConfig.plugins) ? agentFrameworkConfig.plugins : []
+  ).filter((t) => t.enabled !== false);
 
   const hooks = createAgentFrameworkHooks();
   const pluginMap = resolvePromptPluginMap(agentFrameworkContext);

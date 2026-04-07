@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentDefinition, ConversationMeta } from "@memeloop/protocol";
+import type { AgentDefinition, ConversationMeta, ChatMessage } from "@memeloop/protocol";
 
 import {
   AgentInstanceLatestStatus,
-  AgentInstanceMessage,
   AgentInstanceModel,
   AgentInstanceState,
   createInstanceDeltaFromDefinition,
@@ -51,13 +50,15 @@ describe("memeloop types/models alignment", () => {
     expect(Object.keys(delta)).not.toContain("name");
   });
 
-  it("AgentInstanceModel / AgentInstanceMessage runtime shape is consistent", () => {
-    const msg: AgentInstanceMessage = {
-      id: "m1",
-      agentId: "a1",
+  it("AgentInstanceModel / ChatMessage runtime shape is consistent", () => {
+    const msg: ChatMessage = {
+      messageId: "m1",
+      conversationId: "a1",
+      originNodeId: "local",
+      timestamp: Date.now(),
+      lamportClock: 0,
       role: "user",
       content: "hello",
-      created: new Date(),
       metadata: { foo: "bar" },
     };
 
@@ -84,4 +85,3 @@ describe("memeloop types/models alignment", () => {
     expect(instance.status.state).toBe<AgentInstanceState>("working");
   });
 });
-
