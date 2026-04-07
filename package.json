@@ -12,24 +12,46 @@
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "build": "pnpm -r run build",
-    "lint": "cross-env ESLINT_USE_FLAT_CONFIG=false pnpm -r run lint",
+    "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\"",
     "test": "pnpm -r run test",
     "test:unit": "pnpm -r run test:unit",
     "test:ci": "pnpm test && pnpm --filter memeloop-node run test:e2e",
-    "test:coverage": "pnpm -r run test:coverage"
+    "test:coverage": "pnpm -r run test:coverage",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
   },
   "devDependencies": {
-    "cross-env": "^7.0.3",
     "@types/node": "^22.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
+    "@vitest/coverage-v8": "^2.0.0",
+    "cross-env": "^7.0.3",
     "eslint": "^9.0.0",
     "eslint-config-prettier": "^9.0.0",
+    "eslint-config-tidgi": "^2.2.0",
     "eslint-plugin-import": "^2.29.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "prettier": "^3.2.0",
     "tsup": "^8.0.0",
     "typescript": "^5.6.0",
-    "vitest": "^2.0.0",
-    "@vitest/coverage-v8": "^2.0.0"
+    "vitest": "^2.0.0"
   }
 }
