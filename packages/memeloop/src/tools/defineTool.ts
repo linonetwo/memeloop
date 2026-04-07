@@ -450,8 +450,6 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                       }
                     })();
                   }
-                    })();
-                  }
                 }
               }
 
@@ -462,12 +460,8 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                   } catch (error) {
                     logger.warn("Failed to persist tool result", {
                       error,
-                      messageId: toolResultMessage.id,
+                      messageId: toolResultMessage.messageId,
                     });
-                    toolResultMessage.metadata = {
-                      ...toolResultMessage.metadata,
-                      isPersisted: false,
-                    };
                   }
                 })();
               }

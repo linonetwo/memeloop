@@ -87,7 +87,12 @@ async function* streamLlm(
   context: AgentFrameworkContext,
   request: unknown,
 ): AsyncGenerator<unknown, void, unknown> {
-  const raw = context.llmProvider.chat(request);
+  const raw = context.llmProvider.chat?.(request);
+  if (!raw) {
+    throw new Error(
+      "LLM provider does not support legacy chat() method. Use AI SDK's streamText instead.",
+    );
+  }
   let resolved: unknown = raw;
   if (raw != null && typeof (raw as Promise<unknown>).then === "function") {
     resolved = await (raw as Promise<unknown>);
@@ -102,8 +107,17 @@ async function* streamLlm(
 }
 
 function chatMessageToModelMessage(m: ChatMessage): LlmRequestMessage {
+  // Map ChatRole to LLM model roles (agent/error -> assistant)
+  const role: LlmRequestMessage["role"] =
+    m.role === "agent" || m.role === "error"
+      ? "assistant"
+      : m.role === "tool"
+        ? "tool"
+        : m.role === "user"
+          ? "user"
+          : "assistant";
   return {
-    role: m.role,
+    role,
     content: m.content,
   };
 }

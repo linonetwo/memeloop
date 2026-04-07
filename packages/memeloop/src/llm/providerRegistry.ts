@@ -36,8 +36,12 @@ export class ProviderRegistry {
     if (!provider) {
       throw new Error(`Provider not found: ${providerName}`);
     }
+    if (!provider.chat) {
+      throw new Error(
+        `Provider ${providerName} does not support legacy chat() method. Use AI SDK's streamText instead.`,
+      );
+    }
 
     return provider.chat(request);
   }
 }
-
