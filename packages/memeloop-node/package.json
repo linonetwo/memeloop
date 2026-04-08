@@ -25,6 +25,7 @@
     "js-yaml": "^4.1.0",
     "memeloop": "workspace:*",
     "@memeloop/protocol": "workspace:*",
+    "puppeteer": "^21.0.0",
     "tiddlywiki": "^5.3.8",
     "tw5-typed": "^1.1.1",
     "ws": "^8.18.0"

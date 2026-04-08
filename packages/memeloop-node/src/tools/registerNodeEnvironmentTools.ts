@@ -2,8 +2,10 @@ import type { IAgentStorage, IToolRegistry } from "memeloop";
 
 import type { IWikiManager } from "../knowledge/wikiManager";
 import type { ITerminalSessionManager } from "../terminal";
+import { registerDemoTools } from "./demo";
 import { registerFileTools } from "./fileSystem";
 import { registerGenericNodeTools } from "./genericNodeTools";
+import { registerScreenshotTool } from "./screenshot";
 import { registerTerminalTools } from "./terminal";
 import { registerVscodeTools } from "./vscodeCli";
 import { registerWikiTools } from "./wikiTools";
@@ -54,4 +56,6 @@ export function registerNodeEnvironmentTools(
     registerVscodeTools(registry);
   }
   registerGenericNodeTools(registry);
+  registerScreenshotTool(registry);
+  registerDemoTools(registry);
 }
