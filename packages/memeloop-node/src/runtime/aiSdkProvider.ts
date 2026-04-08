@@ -5,11 +5,29 @@ import type { ProviderEntry } from "../config";
 
 /**
  * Create a Vercel AI SDK provider from a ProviderEntry configuration.
- * Replaces the custom fetchProvider.ts with standard AI SDK libraries.
+ * Supports two modes:
+ * - "direct": Connect directly to LLM provider (default)
+ * - "cloud-proxy": Route through memeloop-cloud /api/llm/* proxy (uses cloud JWT)
  */
 export function createAiSdkProvider(entry: ProviderEntry): LanguageModelV1 {
-  const { name, baseUrl, apiKey, model } = entry;
+  const { name, baseUrl, apiKey, model, mode } = entry;
 
+  // Cloud-proxy mode: route through memeloop-cloud /api/llm/*
+  // baseUrl should be cloud URL (e.g. https://cloud.memeloop.com)
+  // apiKey should be user JWT token
+  if (mode === "cloud-proxy") {
+    const cloudBaseUrl = baseUrl || "http://localhost:3000";
+    const proxyBaseUrl = `${cloudBaseUrl.replace(/\/$/, "")}/api/llm`;
+
+    // Use OpenAI-compatible client pointing to cloud proxy
+    const openai = createOpenAI({
+      baseURL: proxyBaseUrl,
+      apiKey: apiKey || "cloud-jwt-required",
+    });
+    return openai(model || "gpt-4");
+  }
+
+  // Direct mode: connect directly to LLM provider
   // OpenAI and OpenAI-compatible providers
   if (name.includes("openai") || name.includes("gpt") || !name.includes("anthropic")) {
     const openai = createOpenAI({
@@ -34,4 +52,8 @@ export function createAiSdkProvider(entry: ProviderEntry): LanguageModelV1 {
     apiKey: apiKey,
   });
   return openai(model || "gpt-4");
+}
+
+export function resolveProviderModelId(entry: ProviderEntry): string {
+  return entry.model?.trim() ? `${entry.name}/${entry.model.trim()}` : entry.name;
 }
