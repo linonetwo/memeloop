@@ -49,9 +49,12 @@ export function createFetchLLMProvider(entry: ProviderEntry): ILLMProvider {
 
   return {
     name,
+    model: undefined,
     async chat(request: unknown): Promise<unknown> {
       const body =
-        typeof request === "object" && request !== null ? { ...(request as object) } : { messages: [] };
+        typeof request === "object" && request !== null
+          ? { ...(request as object) }
+          : { messages: [] };
       const streamRequested = Boolean((body as { stream?: boolean }).stream);
       const headers: Record<string, string> = {
         "Content-Type": "application/json",

@@ -11,6 +11,7 @@ export function createRegistryLLMProvider(
 ): ILLMProvider {
   return {
     name: "registry",
+    model: undefined,
     async chat(request: unknown): Promise<unknown> {
       return registry.chat(defaultModelId, request);
     },

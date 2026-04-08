@@ -24,7 +24,8 @@ import type { ITerminalSessionManager } from "../terminal";
 import type { PeerConnectionManager } from "../network/peerConnectionManager";
 import { ToolRegistry } from "./toolRegistry";
 import { createRegistryLLMProvider } from "./llmAdapter";
-import { createAiSdkProvider } from "./aiSdkProvider";
+import { createAiSdkProvider, resolveProviderModelId } from "./aiSdkProvider";
+import { createFetchLLMProvider } from "./fetchProvider";
 import { registerNodeEnvironmentTools } from "../tools/registerNodeEnvironmentTools";
 import { FileWikiManager, type IWikiManager } from "../knowledge/wikiManager";
 import { createPeerRpcSyncTransport } from "../network/rpcSyncTransport";
@@ -188,13 +189,13 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     providerRegistry = options.providerRegistry ?? new ProviderRegistry();
     for (const entry of config.providers ?? []) {
       const model = createAiSdkProvider(entry);
-      const provider: ILLMProvider = {
-        name: entry.name,
-        model,
-      };
+      const provider = createFetchLLMProvider(entry);
+      provider.model = model;
       providerRegistry.register(provider);
     }
-    const defaultModelId = config.providers?.[0]?.name ?? "default";
+    const defaultModelId = config.providers?.[0]
+      ? resolveProviderModelId(config.providers[0])
+      : "default";
     llmProvider = createRegistryLLMProvider(providerRegistry, defaultModelId);
   }
 
