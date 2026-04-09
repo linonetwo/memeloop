@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "description": "Shared protocol/types for MemeLoop nodes and cloud (JSON-RPC, sync, auth, IM).",
   "license": "MIT",
-  "main": "dist/index.cjs",
+  "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "sideEffects": false,
@@ -21,4 +21,3 @@
     "@vitest/coverage-v8": "^2.0.0"
   }
 }
-
