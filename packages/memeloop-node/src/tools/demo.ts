@@ -3,8 +3,8 @@
  * Inspired by Cursor 3's demo generation for result verification
  */
 
-import { defineTool } from "memeloop";
 import type { IToolRegistry } from "memeloop";
+import { MEMELOOP_STRUCTURED_TOOL_KEY } from "memeloop";
 import { spawn, type ChildProcess } from "node:child_process";
 import { takeScreenshot, type ScreenshotResult } from "./screenshot.js";
 
@@ -80,6 +80,12 @@ export async function startDemoServer(params: DemoStartParams): Promise<DemoStar
     const serverId = `demo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     let output = "";
     let detectedPort = port;
+    if (!detectedPort) {
+      const explicitPort = command.match(/(?:--port|-p)\s+(\d{2,5})/i)?.[1];
+      if (explicitPort) {
+        detectedPort = parseInt(explicitPort, 10);
+      }
+    }
 
     // Capture output to detect port
     childProcess.stdout?.on("data", (data: Buffer) => {
@@ -218,149 +224,110 @@ export async function demoScreenshot(params: {
  * Register demo tools in the tool registry
  */
 export function registerDemoTools(registry: IToolRegistry): void {
-  // demo.start tool
-  const startTool = defineTool({
-    name: "demo.start",
-    description:
-      "Start a development server (e.g., npm run dev, next dev) and return the URL. The server will keep running until explicitly stopped. Useful for testing web applications.",
-    parameters: {
-      type: "object",
-      properties: {
-        command: {
-          type: "string",
-          description:
-            "Command to start the server (e.g., 'npm run dev', 'next dev', 'python -m http.server')",
-        },
-        cwd: {
-          type: "string",
-          description: "Working directory where the command should run",
-        },
-        port: {
-          type: "number",
-          description: "Expected port number (optional, will try to auto-detect)",
-        },
-        waitForReady: {
-          type: "number",
-          description:
-            "Maximum time to wait for server to be ready in milliseconds (default: 30000)",
-        },
-      },
-      required: ["command", "cwd"],
-    },
-    async execute(params: unknown) {
-      const result = await startDemoServer(params as DemoStartParams);
+  registry.registerTool("demo.start", async (args: Record<string, unknown>) => {
+    const command = typeof args.command === "string" ? args.command.trim() : "";
+    const cwdSource =
+      typeof args.cwd === "string"
+        ? args.cwd
+        : typeof args.workingDir === "string"
+          ? args.workingDir
+          : "";
+    const cwd = cwdSource.trim();
+    if (!cwd) return { error: "Missing required 'cwd' parameter" };
+    if (!command) return { error: "Missing required 'command' parameter" };
 
-      if (!result.success) {
-        return {
-          error: result.error,
-          output: result.output,
-        };
-      }
+    const result = await startDemoServer({
+      command,
+      cwd,
+      port: typeof args.port === "number" ? args.port : undefined,
+      waitForReady: typeof args.waitForReady === "number" ? args.waitForReady : undefined,
+    });
 
+    if (!result.success) {
       return {
-        success: true,
-        message: `Server started successfully at ${result.url}`,
-        url: result.url,
-        port: result.port,
-        serverId: result.serverId,
-        note: `Use demo.stop with serverId="${result.serverId}" to stop the server`,
+        error: result.error,
+        output: result.output,
       };
-    },
+    }
+
+    return {
+      ok: true,
+      success: true,
+      message: `Server started successfully at ${result.url}`,
+      url: result.url,
+      port: result.port,
+      serverId: result.serverId,
+      note: `Use demo.stop with serverId="${result.serverId}" to stop the server`,
+    };
   });
 
-  // demo.stop tool
-  const stopTool = defineTool({
-    name: "demo.stop",
-    description: "Stop a running demo server started with demo.start",
-    parameters: {
-      type: "object",
-      properties: {
-        serverId: {
-          type: "string",
-          description: "Server ID returned from demo.start",
-        },
-      },
-      required: ["serverId"],
-    },
-    async execute(params: unknown) {
-      const { serverId } = params as { serverId: string };
-      const result = await stopDemoServer(serverId);
+  registry.registerTool("demo.stop", async (args: Record<string, unknown>) => {
+    const serverId = typeof args.serverId === "string" ? args.serverId.trim() : "";
+    if (!serverId) return { error: "Missing required 'serverId' parameter" };
 
-      if (!result.success) {
-        return { error: result.error };
-      }
+    const result = await stopDemoServer(serverId);
+    if (!result.success) {
+      return { error: result.error };
+    }
 
-      return {
-        success: true,
-        message: `Server ${serverId} stopped successfully`,
-      };
-    },
+    return {
+      ok: true,
+      success: true,
+      message: `Server ${serverId} stopped successfully`,
+    };
   });
 
-  // demo.screenshot tool
-  const screenshotTool = defineTool({
-    name: "demo.screenshot",
-    description:
-      "Start a development server, wait for it to be ready, and take a screenshot. This is the recommended way to verify web application results. The server will keep running after the screenshot.",
-    parameters: {
-      type: "object",
-      properties: {
-        command: {
-          type: "string",
-          description: "Command to start the server (e.g., 'npm run dev')",
-        },
-        cwd: {
-          type: "string",
-          description: "Working directory",
-        },
-        path: {
-          type: "string",
-          description: "URL path to screenshot (default: /)",
-        },
-        port: {
-          type: "number",
-          description: "Expected port number (optional)",
-        },
-        fullPage: {
-          type: "boolean",
-          description: "Capture full scrollable page (default: false)",
-        },
-        waitForReady: {
-          type: "number",
-          description: "Max wait time for server in milliseconds (default: 30000)",
-        },
-      },
-      required: ["command", "cwd"],
-    },
-    async execute(params: unknown) {
-      const result = await demoScreenshot(params as Parameters<typeof demoScreenshot>[0]);
+  registry.registerTool("demo.screenshot", async (args: Record<string, unknown>) => {
+    const command = typeof args.command === "string" ? args.command.trim() : "";
+    const cwdSource =
+      typeof args.cwd === "string"
+        ? args.cwd
+        : typeof args.workingDir === "string"
+          ? args.workingDir
+          : "";
+    const cwd = cwdSource.trim();
+    if (!cwd) return { error: "Missing required 'cwd' parameter" };
+    if (!command) return { error: "Missing required 'command' parameter" };
 
-      if (!result.success) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment
-        return {
-          error: result.error,
-          suggestion: "Check that the command is correct and the application builds successfully",
-        };
-      }
+    const result = await demoScreenshot({
+      command,
+      cwd,
+      path: typeof args.path === "string" ? args.path : undefined,
+      port: typeof args.port === "number" ? args.port : undefined,
+      fullPage: typeof args.fullPage === "boolean" ? args.fullPage : undefined,
+      waitForReady: typeof args.waitForReady === "number" ? args.waitForReady : undefined,
+    });
 
+    if (!result.success) {
       return {
-        success: true,
-        message: `Demo server started and screenshot captured`,
-        url: result.url,
-        serverId: result.serverId,
-        screenshot: {
-          contentHash: result.screenshot?.contentHash,
-          imageBase64: result.screenshot?.imageBase64,
-          size: result.screenshot?.imageBase64?.length ?? 0,
-        },
-        note: `Server is still running. Use demo.stop with serverId="${result.serverId}" to stop it`,
+        error: result.error,
+        suggestion: "Check that the command is correct and the application builds successfully",
       };
-    },
-  });
+    }
 
-  registry.registerTool(startTool.id, startTool.execute);
-  registry.registerTool(stopTool.id, stopTool.execute);
-  registry.registerTool(screenshotTool.id, screenshotTool.execute);
+    return {
+      ok: true,
+      success: true,
+      message: `Demo server started and screenshot captured`,
+      url: result.url,
+      serverId: result.serverId,
+      screenshot: {
+        contentHash: result.screenshot?.contentHash,
+        imageBase64: result.screenshot?.imageBase64,
+        width: result.screenshot?.width,
+        height: result.screenshot?.height,
+        bytes: result.screenshot?.bytes ?? 0,
+      },
+      note: `Server is still running. Use demo.stop with serverId="${result.serverId}" to stop it`,
+      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+        summary:
+          `Demo screenshot captured at ${result.url ?? "unknown"} ` +
+          `(hash=${result.screenshot?.contentHash ?? "unknown"}, ` +
+          `${result.screenshot?.width ?? "?"}x${result.screenshot?.height ?? "?"}, ` +
+          `${result.screenshot?.bytes ?? 0} bytes, serverId=${result.serverId ?? "unknown"})`,
+      },
+    };
+  });
 }
 
 /**

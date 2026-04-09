@@ -3,8 +3,8 @@
  * Inspired by Cursor 3's demo/screenshot feature for result verification
  */
 
-import { defineTool } from "memeloop";
 import type { IToolRegistry } from "memeloop";
+import { MEMELOOP_STRUCTURED_TOOL_KEY } from "memeloop";
 
 export interface ScreenshotParams {
   url: string;
@@ -20,6 +20,7 @@ export interface ScreenshotResult {
   contentHash?: string;
   width?: number;
   height?: number;
+  bytes?: number;
   error?: string;
 }
 
@@ -30,7 +31,26 @@ export interface ScreenshotResult {
 export async function takeScreenshot(params: ScreenshotParams): Promise<ScreenshotResult> {
   try {
     // Dynamic import to avoid bundling puppeteer if not used
-    const puppeteer = await import("puppeteer").catch(() => null);
+    const puppeteerModule = await import("puppeteer").catch(() => null);
+    const puppeteer =
+      puppeteerModule && typeof puppeteerModule === "object" && "launch" in puppeteerModule
+        ? puppeteerModule
+        : puppeteerModule &&
+            typeof puppeteerModule === "object" &&
+            puppeteerModule.default &&
+            typeof puppeteerModule.default === "object" &&
+            "launch" in puppeteerModule.default
+          ? puppeteerModule.default
+          : puppeteerModule &&
+              typeof puppeteerModule === "object" &&
+              puppeteerModule.default &&
+              typeof puppeteerModule.default === "object" &&
+              "default" in puppeteerModule.default &&
+              puppeteerModule.default.default &&
+              typeof puppeteerModule.default.default === "object" &&
+              "launch" in puppeteerModule.default.default
+            ? puppeteerModule.default.default
+            : null;
 
     if (!puppeteer) {
       return {
@@ -94,6 +114,7 @@ export async function takeScreenshot(params: ScreenshotParams): Promise<Screensh
         contentHash,
         width: 1920,
         height: 1080,
+        bytes: screenshotBuffer.length,
       };
     } finally {
       await browser.close();
@@ -111,58 +132,44 @@ export async function takeScreenshot(params: ScreenshotParams): Promise<Screensh
  * Register screenshot tool in the tool registry
  */
 export function registerScreenshotTool(registry: IToolRegistry): void {
-  const tool = defineTool({
-    name: "screenshot",
-    description:
-      "Take a screenshot of a URL or local application. Useful for verifying UI changes, capturing demo results, or visual testing. Returns base64-encoded PNG image.",
-    parameters: {
-      type: "object",
-      properties: {
-        url: {
-          type: "string",
-          description: "URL to screenshot (e.g., http://localhost:3000 or https://example.com)",
-        },
-        selector: {
-          type: "string",
-          description: "Optional CSS selector to screenshot specific element instead of full page",
-        },
-        fullPage: {
-          type: "boolean",
-          description: "Capture full scrollable page instead of just viewport (default: false)",
-        },
-        waitForSelector: {
-          type: "string",
-          description: "Wait for this CSS selector to appear before taking screenshot",
-        },
-        timeout: {
-          type: "number",
-          description: "Maximum wait time in milliseconds (default: 30000)",
-        },
-      },
-      required: ["url"],
-    },
-    async execute(params: unknown) {
-      const typedParams = params as ScreenshotParams;
-      const result = await takeScreenshot(typedParams);
+  registry.registerTool("screenshot", async (args: Record<string, unknown>) => {
+    const url = typeof args.url === "string" ? args.url.trim() : "";
+    if (!url) {
+      return { error: "Missing required 'url' parameter" };
+    }
 
-      if (!result.success) {
-        return {
-          error: result.error,
-          suggestion: "Make sure the URL is accessible and puppeteer is installed",
-        };
-      }
+    const typedParams: ScreenshotParams = {
+      url,
+      selector: typeof args.selector === "string" ? args.selector : undefined,
+      fullPage: typeof args.fullPage === "boolean" ? args.fullPage : undefined,
+      waitForSelector: typeof args.waitForSelector === "string" ? args.waitForSelector : undefined,
+      timeout: typeof args.timeout === "number" ? args.timeout : undefined,
+    };
 
-      // Return structured result with image data
+    const result = await takeScreenshot(typedParams);
+
+    if (!result.success) {
       return {
-        success: true,
-        message: `Screenshot captured successfully (${result.width}x${result.height})`,
-        contentHash: result.contentHash,
-        imageBase64: result.imageBase64,
-        // Truncate base64 in summary to avoid overwhelming the agent
-        summary: `Screenshot of ${typedParams.url} captured (${result.imageBase64?.length ?? 0} bytes)`,
+        error: result.error,
+        suggestion: "Make sure the URL is accessible and puppeteer is installed",
       };
-    },
-  });
+    }
 
-  registry.registerTool(tool.id, tool.execute);
+    return {
+      ok: true,
+      success: true,
+      message: `Screenshot captured successfully (${result.width}x${result.height})`,
+      contentHash: result.contentHash,
+      width: result.width,
+      height: result.height,
+      bytes: result.bytes,
+      imageBase64: result.imageBase64,
+      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+        summary:
+          `Screenshot captured for ${typedParams.url} ` +
+          `(${result.width ?? "?"}x${result.height ?? "?"}, ` +
+          `${result.bytes ?? 0} bytes, hash=${result.contentHash ?? "unknown"})`,
+      },
+    };
+  });
 }

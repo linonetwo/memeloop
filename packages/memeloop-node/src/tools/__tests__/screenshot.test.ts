@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import type { IToolRegistry } from "memeloop";
+import { MEMELOOP_STRUCTURED_TOOL_KEY } from "memeloop";
 
 // Mock puppeteer
 vi.mock("puppeteer", () => ({
@@ -10,6 +11,9 @@ vi.mock("puppeteer", () => ({
         goto: vi.fn(async () => {}),
         setViewport: vi.fn(async () => {}),
         waitForSelector: vi.fn(async () => {}),
+        $: vi.fn(async () => ({
+          screenshot: vi.fn(async () => Buffer.from("fake-screenshot-data")),
+        })),
         screenshot: vi.fn(async () => Buffer.from("fake-screenshot-data")),
         close: vi.fn(async () => {}),
       })),
@@ -50,10 +54,15 @@ describe("screenshot tool", () => {
     registerScreenshotTool(registry as IToolRegistry);
     const tool = registry.tools.get("screenshot")!;
     const res = (await tool({ url: "http://localhost:3000" })) as Record<string, unknown>;
-    expect(res.ok).toBe(true);
+    expect(res.success).toBe(true);
     expect(res.contentHash).toBeDefined();
     expect(res.imageBase64).toBeDefined();
-    expect(res.url).toBe("http://localhost:3000");
+    expect(res.width).toBe(1920);
+    expect(res.height).toBe(1080);
+    expect(res.bytes).toBe(Buffer.from("fake-screenshot-data").length);
+    expect((res[MEMELOOP_STRUCTURED_TOOL_KEY] as { summary: string }).summary).toContain(
+      "Screenshot captured for http://localhost:3000",
+    );
   });
 
   it("supports fullPage option", async () => {
@@ -63,7 +72,7 @@ describe("screenshot tool", () => {
       string,
       unknown
     >;
-    expect(res.ok).toBe(true);
+    expect(res.success).toBe(true);
   });
 
   it("supports selector option", async () => {
@@ -73,7 +82,7 @@ describe("screenshot tool", () => {
       string,
       unknown
     >;
-    expect(res.ok).toBe(true);
+    expect(res.success).toBe(true);
   });
 
   it("supports viewport dimensions", async () => {
@@ -84,7 +93,7 @@ describe("screenshot tool", () => {
       viewportWidth: 1920,
       viewportHeight: 1080,
     })) as Record<string, unknown>;
-    expect(res.ok).toBe(true);
+    expect(res.success).toBe(true);
   });
 
   it("handles errors gracefully", async () => {
