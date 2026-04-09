@@ -37,7 +37,12 @@ describe("rpcHandlers memeloop.terminal.execute branches", () => {
     } as any;
 
     const ctx: RpcHandlerContext = {
-      runtime: { createAgent: vi.fn(), sendMessage: vi.fn(), cancelAgent: vi.fn(), subscribeToUpdates: vi.fn().mockReturnValue(() => {}) } as any,
+      runtime: {
+        createAgent: vi.fn(),
+        sendMessage: vi.fn(),
+        cancelAgent: vi.fn(),
+        subscribeToUpdates: vi.fn().mockReturnValue(() => {}),
+      } as any,
       storage,
       terminalManager,
       wikiManager: undefined,
@@ -63,6 +68,107 @@ describe("rpcHandlers memeloop.terminal.execute branches", () => {
       chunks: [],
       nextSeq: 1,
     });
+    expect(terminalManager.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "echo",
+        args: ["hi"],
+        env: undefined,
+      }),
+    );
+  });
+
+  it("passes explicit args and env through memeloop.terminal.execute without splitting command", async () => {
+    const storage = mkStorage();
+    const terminalManager = {
+      start: vi.fn().mockResolvedValue({ sessionId: "s-explicit" }),
+      follow: vi.fn().mockResolvedValue({
+        sessionId: "s-explicit",
+        status: "exited",
+        exitCode: 0,
+        nextSeq: 1,
+        done: true,
+        chunks: [],
+      }),
+      cancel: vi.fn(),
+      get: vi.fn().mockReturnValue({ sessionId: "s-explicit", status: "running" }),
+      list: vi.fn(),
+      respond: vi.fn(),
+      onOutput: vi.fn().mockReturnValue(() => {}),
+      onStatusUpdate: vi.fn().mockReturnValue(() => {}),
+      onInteractionPrompt: vi.fn().mockReturnValue(() => {}),
+    } as any;
+
+    const ctx: RpcHandlerContext = {
+      runtime: {
+        createAgent: vi.fn(),
+        sendMessage: vi.fn(),
+        cancelAgent: vi.fn(),
+        subscribeToUpdates: vi.fn().mockReturnValue(() => {}),
+      } as any,
+      storage,
+      terminalManager,
+      wikiManager: undefined,
+      toolRegistry: undefined,
+      nodeId: "node-self",
+    };
+
+    await handleRpc(ctx, "memeloop.terminal.execute", {
+      command: "C:/Program Files/node.exe",
+      args: ["-e", "console.log(process.env.TEST_FLAG)"],
+      env: { TEST_FLAG: "1" },
+      waitMode: "until-exit",
+      timeoutMs: 1000,
+    });
+
+    expect(terminalManager.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "C:/Program Files/node.exe",
+        args: ["-e", "console.log(process.env.TEST_FLAG)"],
+        env: { TEST_FLAG: "1" },
+      }),
+    );
+  });
+
+  it("returns validation errors for invalid explicit args or env", async () => {
+    const storage = mkStorage();
+    const terminalManager = {
+      start: vi.fn(),
+      follow: vi.fn(),
+      cancel: vi.fn(),
+      get: vi.fn(),
+      list: vi.fn(),
+      respond: vi.fn(),
+      onOutput: vi.fn().mockReturnValue(() => {}),
+      onStatusUpdate: vi.fn().mockReturnValue(() => {}),
+      onInteractionPrompt: vi.fn().mockReturnValue(() => {}),
+    } as any;
+
+    const ctx: RpcHandlerContext = {
+      runtime: {
+        createAgent: vi.fn(),
+        sendMessage: vi.fn(),
+        cancelAgent: vi.fn(),
+        subscribeToUpdates: vi.fn().mockReturnValue(() => {}),
+      } as any,
+      storage,
+      terminalManager,
+      wikiManager: undefined,
+      toolRegistry: undefined,
+      nodeId: "node-self",
+    };
+
+    const badArgs = (await handleRpc(ctx, "memeloop.terminal.execute", {
+      command: "node",
+      args: ["-e", 1] as any,
+    })) as any;
+    expect(badArgs.error).toContain("Invalid 'args'");
+
+    const badEnv = (await handleRpc(ctx, "memeloop.terminal.execute", {
+      command: "node",
+      env: { TEST_FLAG: 1 } as any,
+    })) as any;
+    expect(badEnv.error).toContain("Invalid 'env'");
+    expect(terminalManager.start).not.toHaveBeenCalled();
   });
 
   it("until-timeout timedOut=true cancels, and notify covers output/prompt/status branches", async () => {
@@ -86,13 +192,29 @@ describe("rpcHandlers memeloop.terminal.execute branches", () => {
       start: vi.fn().mockResolvedValue({ sessionId: "s1" }),
       follow: vi.fn().mockImplementation(async () => {
         // Trigger wireTerminalOutputToStorage listener:
-        outputListener?.({ sessionId: "other", seq: 1, stream: "stdout", data: "IGNORED", ts: 1 } as any);
+        outputListener?.({
+          sessionId: "other",
+          seq: 1,
+          stream: "stdout",
+          data: "IGNORED",
+          ts: 1,
+        } as any);
         outputListener?.({ sessionId: "s1", seq: 2, stream: "stdout", data: "OUT", ts: 2 } as any);
         outputListener?.({ sessionId: "s1", seq: 3, stream: "stderr", data: "ERR", ts: 3 } as any);
 
         // Trigger prompt/status listeners:
-        onPromptListener?.({ sessionId: "other", promptText: "nope", patternName: "p", timestamp: 1 });
-        onPromptListener?.({ sessionId: "s1", promptText: "Password:", patternName: "pw", timestamp: 2 });
+        onPromptListener?.({
+          sessionId: "other",
+          promptText: "nope",
+          patternName: "p",
+          timestamp: 1,
+        });
+        onPromptListener?.({
+          sessionId: "s1",
+          promptText: "Password:",
+          patternName: "pw",
+          timestamp: 2,
+        });
 
         onStatusListener?.({ sessionId: "other", status: "running", exitCode: null, ts: 1 });
         onStatusListener?.({ sessionId: "s1", status: "exited", exitCode: 0, ts: 2 });
@@ -128,7 +250,12 @@ describe("rpcHandlers memeloop.terminal.execute branches", () => {
     } as any;
 
     const ctx: RpcHandlerContext = {
-      runtime: { createAgent: vi.fn(), sendMessage: vi.fn(), cancelAgent: vi.fn(), subscribeToUpdates: vi.fn().mockReturnValue(() => {}) } as any,
+      runtime: {
+        createAgent: vi.fn(),
+        sendMessage: vi.fn(),
+        cancelAgent: vi.fn(),
+        subscribeToUpdates: vi.fn().mockReturnValue(() => {}),
+      } as any,
       storage,
       terminalManager,
       wikiManager: undefined,
@@ -204,7 +331,12 @@ describe("rpcHandlers memeloop.terminal.execute branches", () => {
     } as any;
 
     const ctx: RpcHandlerContext = {
-      runtime: { createAgent: vi.fn(), sendMessage: vi.fn(), cancelAgent: vi.fn(), subscribeToUpdates: vi.fn().mockReturnValue(() => {}) } as any,
+      runtime: {
+        createAgent: vi.fn(),
+        sendMessage: vi.fn(),
+        cancelAgent: vi.fn(),
+        subscribeToUpdates: vi.fn().mockReturnValue(() => {}),
+      } as any,
       storage,
       terminalManager,
       wikiManager: undefined,
@@ -220,7 +352,10 @@ describe("rpcHandlers memeloop.terminal.execute branches", () => {
       stream: false,
     })) as any;
 
-    expect(terminalManager.follow).toHaveBeenCalledWith("s2", expect.objectContaining({ untilExit: true }));
+    expect(terminalManager.follow).toHaveBeenCalledWith(
+      "s2",
+      expect.objectContaining({ untilExit: true }),
+    );
     expect(terminalManager.cancel).not.toHaveBeenCalled();
     expect(r.timedOut).toBe(false);
     expect(r.chunks).toEqual([]);
@@ -228,4 +363,3 @@ describe("rpcHandlers memeloop.terminal.execute branches", () => {
     expect(r.stderr).toBe("WARN");
   });
 });
-

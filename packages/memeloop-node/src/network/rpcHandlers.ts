@@ -9,9 +9,17 @@ import { resolveQuestionAnswer } from "memeloop";
 import { resolveApproval } from "memeloop";
 import type { IAgentStorage } from "memeloop";
 import type { ITerminalSessionManager } from "../terminal/index.js";
-import { prepareTerminalSessionStorage, wireTerminalOutputToStorage } from "../terminal/sessionStorage";
+import {
+  prepareTerminalSessionStorage,
+  wireTerminalOutputToStorage,
+} from "../terminal/sessionStorage";
 import { createThrottledTerminalOutputNotify } from "../terminal/throttleOutputNotify.js";
-import { runTerminalGetOutput, runTerminalSignal, runTerminalStart } from "../tools/terminal.js";
+import {
+  normalizeTerminalCommandRequest,
+  runTerminalGetOutput,
+  runTerminalSignal,
+  runTerminalStart,
+} from "../tools/terminal.js";
 import type { TerminalOutputChunk } from "../terminal/types.js";
 import type { IWikiManager } from "../knowledge/wikiManager.js";
 import type { ImChannelYaml } from "../config";
@@ -97,7 +105,8 @@ export async function handleRpc(
   }
   if (method === "memeloop.auth.hello") {
     const p = params as { nodeId?: string; capabilities?: Record<string, unknown> };
-    const nodeId = typeof p?.nodeId === "string" && p.nodeId.trim() ? p.nodeId.trim() : context.nodeId;
+    const nodeId =
+      typeof p?.nodeId === "string" && p.nodeId.trim() ? p.nodeId.trim() : context.nodeId;
     return { ok: true, nodeId, receivedAt: Date.now() };
   }
   if (method === "memeloop.auth.confirmPin") {
@@ -221,13 +230,14 @@ export async function handleRpc(
     if (method === "memeloop.terminal.execute") {
       const p = params as {
         command: string;
+        args?: string[];
+        env?: Record<string, string>;
         timeoutMs?: number | string;
         cwd?: string;
         waitMode?: "until-exit" | "until-timeout" | "detached";
         maxWaitMs?: number | string;
         stream?: boolean;
       };
-      const command = p.command;
       const timeoutMsRaw = p.timeoutMs ?? 60_000;
       const timeoutMs0 =
         typeof timeoutMsRaw === "number"
@@ -247,14 +257,20 @@ export async function handleRpc(
             : timeoutMs;
       const maxWaitMs = Number.isFinite(maxWaitMs0) && maxWaitMs0 > 0 ? maxWaitMs0 : timeoutMs;
       const stream = p.stream === true;
-      const parts = command.trim().split(/\s+/);
-      const cmd = parts[0];
-      const cmdArgs = parts.slice(1);
+      const normalized = normalizeTerminalCommandRequest(
+        (params as Record<string, unknown>) ?? {},
+        "terminal.execute",
+      );
+      if (!normalized.ok) {
+        return { error: normalized.error };
+      }
+      const { command: cmd, args: cmdArgs, env } = normalized.value;
 
       const { sessionId } = await terminalManager.start({
         command: cmd,
-        args: cmdArgs.length ? cmdArgs : undefined,
+        args: cmdArgs,
         cwd,
+        env,
         promptPatterns: [{ name: "generic", regex: /[?%]\s*$|>\s*$|:\s*$/m }],
         idleTimeoutMs: Math.min(15_000, timeoutMs),
       });
@@ -299,7 +315,15 @@ export async function handleRpc(
         unsubStatus();
       }
       if (waitMode === "detached") {
-        return { sessionId, status: "running", exitCode: null, done: false, timedOut: false, nextSeq: 1, chunks: [] };
+        return {
+          sessionId,
+          status: "running",
+          exitCode: null,
+          done: false,
+          timedOut: false,
+          nextSeq: 1,
+          chunks: [],
+        };
       }
       const follow = await terminalManager.follow(sessionId, {
         fromSeq: 1,
@@ -309,8 +333,14 @@ export async function handleRpc(
       await persistQueue;
       const timedOut = waitMode === "until-timeout" && !follow.done;
       if (timedOut) await terminalManager.cancel(sessionId);
-      const stdout = follow.chunks.filter((c) => c.stream === "stdout").map((c) => c.data).join("");
-      const stderr = follow.chunks.filter((c) => c.stream === "stderr").map((c) => c.data).join("");
+      const stdout = follow.chunks
+        .filter((c) => c.stream === "stdout")
+        .map((c) => c.data)
+        .join("");
+      const stderr = follow.chunks
+        .filter((c) => c.stream === "stderr")
+        .map((c) => c.data)
+        .join("");
       return {
         sessionId,
         status: follow.status,
@@ -340,7 +370,12 @@ export async function handleRpc(
       return { ok: true, sessionId: p.sessionId, finalStatus: info?.status ?? "killed" };
     }
     if (method === "memeloop.terminal.follow") {
-      const p = params as { sessionId: string; fromSeq?: number; untilExit?: boolean; maxWaitMs?: number };
+      const p = params as {
+        sessionId: string;
+        fromSeq?: number;
+        untilExit?: boolean;
+        maxWaitMs?: number;
+      };
       return terminalManager.follow(p.sessionId, {
         fromSeq: p.fromSeq ?? 1,
         untilExit: p.untilExit === true,
@@ -377,8 +412,19 @@ export async function handleRpc(
       return { tiddler: tiddler ?? null };
     }
     if (method === "memeloop.knowledge.write") {
-      const p = params as { wikiId?: string; title: string; text?: string; type?: string; tags?: string | string[] };
-      const tags = p.tags == null ? undefined : Array.isArray(p.tags) ? p.tags : p.tags.split(/\s+/).filter(Boolean);
+      const p = params as {
+        wikiId?: string;
+        title: string;
+        text?: string;
+        type?: string;
+        tags?: string | string[];
+      };
+      const tags =
+        p.tags == null
+          ? undefined
+          : Array.isArray(p.tags)
+            ? p.tags
+            : p.tags.split(/\s+/).filter(Boolean);
       await wikiManager.setTiddler(p.wikiId ?? "default", {
         title: p.title,
         text: p.text ?? "",
@@ -390,17 +436,13 @@ export async function handleRpc(
   }
 
   if (method === "memeloop.wiki.listWikis") {
-    const wikis: WikiInfo[] = wikiManager
-      ? [{ wikiId: "default", title: "default" }]
-      : [];
+    const wikis: WikiInfo[] = wikiManager ? [{ wikiId: "default", title: "default" }] : [];
     return { wikis };
   }
   if (method === "memeloop.node.getInfo") {
     const tools = context.toolRegistry?.listTools?.() ?? [];
     const imChannelIds = (context.imChannels ?? []).map((c) => c.channelId);
-    const wikis: WikiInfo[] = wikiManager
-      ? [{ wikiId: "default", title: "default" }]
-      : [];
+    const wikis: WikiInfo[] = wikiManager ? [{ wikiId: "default", title: "default" }] : [];
     return {
       nodeId: context.nodeId,
       capabilities: {
@@ -573,7 +615,11 @@ export async function handleRpc(
   }
 
   if (method === "memeloop.mcp.callTool") {
-    const p = params as { serverName?: string; toolName?: string; arguments?: Record<string, unknown> };
+    const p = params as {
+      serverName?: string;
+      toolName?: string;
+      arguments?: Record<string, unknown>;
+    };
     const serverName = typeof p?.serverName === "string" ? p.serverName.trim() : "";
     const toolName = typeof p?.toolName === "string" ? p.toolName.trim() : "";
     if (!serverName || !toolName) {
@@ -581,7 +627,12 @@ export async function handleRpc(
     }
     try {
       const { callMcpToolOnServer } = await import("../mcp/localMcpClient.js");
-      const result = await callMcpToolOnServer(context.mcpServers ?? [], serverName, toolName, p.arguments ?? {});
+      const result = await callMcpToolOnServer(
+        context.mcpServers ?? [],
+        serverName,
+        toolName,
+        p.arguments ?? {},
+      );
       return { result };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

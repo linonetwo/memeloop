@@ -9,7 +9,10 @@ import { MEMELOOP_STRUCTURED_TOOL_KEY } from "memeloop";
 
 import type { ITerminalSessionManager } from "../terminal/index.js";
 import type { TerminalSessionInfo } from "../terminal/types.js";
-import { prepareTerminalSessionStorage, wireTerminalOutputToStorage } from "../terminal/sessionStorage";
+import {
+  prepareTerminalSessionStorage,
+  wireTerminalOutputToStorage,
+} from "../terminal/sessionStorage";
 import { createThrottledTerminalOutputNotify } from "../terminal/throttleOutputNotify.js";
 
 const EXECUTE_ID = "terminal.execute";
@@ -46,6 +49,81 @@ export interface RegisterTerminalToolsOptions {
   terminalWsNotify?: (method: string, params: unknown) => void;
 }
 
+export interface NormalizedTerminalCommandRequest {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  commandLine: string;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value as Record<string, unknown>).every((item) => typeof item === "string")
+  );
+}
+
+export function normalizeTerminalCommandRequest(
+  args: Record<string, unknown>,
+  source: "terminal.start" | "terminal.execute",
+): { ok: true; value: NormalizedTerminalCommandRequest } | { ok: false; error: string } {
+  const commandRaw = args.command;
+  if (typeof commandRaw !== "string" || !commandRaw.trim()) {
+    return {
+      ok: false,
+      error:
+        source === "terminal.start"
+          ? "Missing 'command' for terminal.start"
+          : "Missing or invalid 'command'. Example: { command: 'npm run build', timeoutMs?: 60000, cwd?: '.' }",
+    };
+  }
+
+  const command = commandRaw.trim();
+
+  const rawArgs = args.args;
+  if (rawArgs !== undefined && !isStringArray(rawArgs)) {
+    return { ok: false, error: "Invalid 'args'. Expected string[]" };
+  }
+
+  const rawEnv = args.env;
+  if (rawEnv !== undefined && !isStringRecord(rawEnv)) {
+    return { ok: false, error: "Invalid 'env'. Expected Record<string, string>" };
+  }
+
+  if (rawArgs !== undefined) {
+    const explicitArgs = [...rawArgs];
+    return {
+      ok: true,
+      value: {
+        command,
+        args: explicitArgs,
+        env: rawEnv ? { ...rawEnv } : undefined,
+        commandLine: [command, ...explicitArgs].join(" "),
+      },
+    };
+  }
+
+  const parts = command.split(/\s+/);
+  const cmd = parts[0];
+  const cmdArgs = parts.slice(1);
+
+  return {
+    ok: true,
+    value: {
+      command: cmd,
+      args: cmdArgs.length ? cmdArgs : undefined,
+      env: rawEnv ? { ...rawEnv } : undefined,
+      commandLine: command,
+    },
+  };
+}
+
 export function registerTerminalTools(
   registry: IToolRegistry,
   sessionManager: ITerminalSessionManager,
@@ -54,9 +132,7 @@ export function registerTerminalTools(
   registry.registerTool(EXECUTE_ID, (args: Record<string, unknown>) =>
     executeImpl(args, sessionManager, options),
   );
-  registry.registerTool(LIST_ID, (args: Record<string, unknown>) =>
-    listImpl(args, sessionManager),
-  );
+  registry.registerTool(LIST_ID, (args: Record<string, unknown>) => listImpl(args, sessionManager));
   registry.registerTool(RESPOND_ID, (args: Record<string, unknown>) =>
     respondImpl(args, sessionManager),
   );
@@ -83,14 +159,17 @@ export async function runTerminalStart(
   manager: ITerminalSessionManager,
   options?: RegisterTerminalToolsOptions,
 ): Promise<unknown> {
-  const command = args.command as string | undefined;
   const cwd = args.cwd as string | undefined;
   const modeRaw = (args.mode as string) ?? "background";
   const mode =
-    modeRaw === "await" || modeRaw === "background" || modeRaw === "interactive" || modeRaw === "service"
+    modeRaw === "await" ||
+    modeRaw === "background" ||
+    modeRaw === "interactive" ||
+    modeRaw === "service"
       ? modeRaw
       : "background";
-  const parentConversationId = typeof args.parentConversationId === "string" ? args.parentConversationId : undefined;
+  const parentConversationId =
+    typeof args.parentConversationId === "string" ? args.parentConversationId : undefined;
   const label = typeof args.label === "string" ? args.label : undefined;
   const idleTimeoutMs =
     typeof args.idleTimeoutMs === "number" && args.idleTimeoutMs > 0
@@ -101,24 +180,25 @@ export async function runTerminalStart(
           ? undefined
           : 15_000;
 
-  if (!command || typeof command !== "string") {
-    return { error: "Missing 'command' for terminal.start" };
+  const normalized = normalizeTerminalCommandRequest(args, "terminal.start");
+  if (!normalized.ok) {
+    return { error: normalized.error };
   }
-
-  const parts = command.trim().split(/\s+/);
-  const cmd = parts[0];
-  const cmdArgs = parts.slice(1);
+  const { command, args: cmdArgs, env, commandLine } = normalized.value;
 
   const customPatterns = args.promptPatterns as { name: string; regex: RegExp }[] | undefined;
   const promptPatterns =
     mode === "interactive"
-      ? (Array.isArray(customPatterns) && customPatterns.length > 0 ? customPatterns : DEFAULT_INTERACTIVE_PROMPT_PATTERNS)
+      ? Array.isArray(customPatterns) && customPatterns.length > 0
+        ? customPatterns
+        : DEFAULT_INTERACTIVE_PROMPT_PATTERNS
       : [{ name: "generic", regex: /[?%]\s*$|>\s*$|:\s*$/m }];
 
   const { sessionId } = await manager.start({
-    command: cmd,
-    args: cmdArgs.length ? cmdArgs : undefined,
+    command,
+    args: cmdArgs,
     cwd,
+    env,
     mode,
     parentConversationId,
     label,
@@ -129,7 +209,6 @@ export async function runTerminalStart(
 
   const storage = options?.storage;
   const nodeId = options?.nodeId ?? "local";
-  const commandLine = [cmd, ...(cmdArgs.length ? cmdArgs : [])].join(" ");
 
   let unsubSessionComplete: (() => void) | undefined;
 
@@ -206,8 +285,8 @@ export async function runTerminalStart(
     [MEMELOOP_STRUCTURED_TOOL_KEY]: {
       summary:
         mode === "await"
-          ? `[terminal.start await] ${command}\nsessionId=${sessionId}`
-          : `[terminal.start ${mode}] ${command}\nsessionId=${sessionId}`,
+          ? `[terminal.start await] ${commandLine}\nsessionId=${sessionId}`
+          : `[terminal.start ${mode}] ${commandLine}\nsessionId=${sessionId}`,
       detailRef,
       ...(mode === "await" ? { awaitSessionId: sessionId } : {}),
     },
@@ -216,7 +295,10 @@ export async function runTerminalStart(
   return base;
 }
 
-export async function runTerminalSignal(args: Record<string, unknown>, manager: ITerminalSessionManager): Promise<unknown> {
+export async function runTerminalSignal(
+  args: Record<string, unknown>,
+  manager: ITerminalSessionManager,
+): Promise<unknown> {
   const sessionId = args.sessionId as string | undefined;
   const sig = (args.signal as string) ?? "SIGINT";
   if (!sessionId) {
@@ -230,7 +312,10 @@ export async function runTerminalSignal(args: Record<string, unknown>, manager: 
   return { ok: true, sessionId, signal: sig };
 }
 
-export async function runTerminalGetOutput(args: Record<string, unknown>, manager: ITerminalSessionManager): Promise<unknown> {
+export async function runTerminalGetOutput(
+  args: Record<string, unknown>,
+  manager: ITerminalSessionManager,
+): Promise<unknown> {
   const sessionId = args.sessionId as string | undefined;
   if (!sessionId) {
     return { error: "Missing sessionId" };
@@ -260,34 +345,30 @@ async function executeImpl(
   manager: ITerminalSessionManager,
   options?: RegisterTerminalToolsOptions,
 ): Promise<unknown> {
-  const command = args.command as string | undefined;
   const timeoutMs = (args.timeoutMs as number) ?? 60_000;
   const cwd = args.cwd as string | undefined;
   const waitMode =
-    args.waitMode === "until-exit" || args.waitMode === "until-timeout" || args.waitMode === "detached"
+    args.waitMode === "until-exit" ||
+    args.waitMode === "until-timeout" ||
+    args.waitMode === "detached"
       ? (args.waitMode as "until-exit" | "until-timeout" | "detached")
       : "until-timeout";
   const maxWaitMsRaw = args.maxWaitMs as number | undefined;
   const maxWaitMs = typeof maxWaitMsRaw === "number" ? maxWaitMsRaw : timeoutMs;
   const stream = args.stream === true;
 
-  if (!command || typeof command !== "string") {
-    return {
-      error: "Missing or invalid 'command'. Example: { command: 'npm run build', timeoutMs?: 60000, cwd?: '.' }",
-    };
+  const normalized = normalizeTerminalCommandRequest(args, "terminal.execute");
+  if (!normalized.ok) {
+    return { error: normalized.error };
   }
-
-  const parts = command.trim().split(/\s+/);
-  const cmd = parts[0];
-  const cmdArgs = parts.slice(1);
+  const { command, args: cmdArgs, env, commandLine } = normalized.value;
 
   const { sessionId } = await manager.start({
-    command: cmd,
-    args: cmdArgs.length ? cmdArgs : undefined,
+    command,
+    args: cmdArgs,
     cwd,
-    promptPatterns: [
-      { name: "generic", regex: /[?%]\s*$|>\s*$|:\s*$/m },
-    ],
+    env,
+    promptPatterns: [{ name: "generic", regex: /[?%]\s*$|>\s*$|:\s*$/m }],
     idleTimeoutMs: Math.min(15_000, timeoutMs),
   });
 
@@ -316,9 +397,14 @@ async function executeImpl(
     }
   }
 
-  const structuredPayload = (exitCode: number | null, timedOut: boolean, stdout: string, stderr: string) => ({
+  const structuredPayload = (
+    exitCode: number | null,
+    timedOut: boolean,
+    stdout: string,
+    stderr: string,
+  ) => ({
     [MEMELOOP_STRUCTURED_TOOL_KEY]: {
-      summary: terminalExecuteSummary({ command, exitCode, timedOut, stdout, stderr }),
+      summary: terminalExecuteSummary({ command: commandLine, exitCode, timedOut, stdout, stderr }),
       ...(storage
         ? {
             detailRef: {
@@ -354,8 +440,14 @@ async function executeImpl(
     await persistQueue;
     const timedOut = waitMode === "until-timeout" && !follow.done;
     if (timedOut) await manager.cancel(sessionId);
-    const stdout = follow.chunks.filter((c) => c.stream === "stdout").map((c) => c.data).join("");
-    const stderr = follow.chunks.filter((c) => c.stream === "stderr").map((c) => c.data).join("");
+    const stdout = follow.chunks
+      .filter((c) => c.stream === "stdout")
+      .map((c) => c.data)
+      .join("");
+    const stderr = follow.chunks
+      .filter((c) => c.stream === "stderr")
+      .map((c) => c.data)
+      .join("");
     return {
       sessionId,
       status: follow.status,
@@ -369,9 +461,9 @@ async function executeImpl(
       output: stdout + (stderr ? `\n[stderr]\n${stderr}` : ""),
       ...structuredPayload(follow.exitCode, timedOut, stdout, stderr),
     };
-  } catch (e) {
+  } catch (error) {
     await persistQueue;
-    throw e;
+    throw error;
   } finally {
     await persistQueue;
     unsubOutput?.();
@@ -403,8 +495,8 @@ async function respondImpl(
   try {
     await manager.respond(sessionId, input);
     return { ok: true };
-  } catch (e) {
-    return { error: String(e) };
+  } catch (error) {
+    return { error: String(error) };
   }
 }
 
@@ -414,15 +506,18 @@ async function followImpl(
 ): Promise<unknown> {
   const sessionId = args.sessionId as string | undefined;
   if (!sessionId || typeof sessionId !== "string") {
-    return { error: "Missing sessionId. Example: { sessionId: 'uuid', fromSeq?: 1, untilExit?: true, maxWaitMs?: 30000 }" };
+    return {
+      error:
+        "Missing sessionId. Example: { sessionId: 'uuid', fromSeq?: 1, untilExit?: true, maxWaitMs?: 30000 }",
+    };
   }
   const fromSeq = typeof args.fromSeq === "number" ? args.fromSeq : 1;
   const untilExit = args.untilExit === true;
   const maxWaitMs = typeof args.maxWaitMs === "number" ? args.maxWaitMs : 30_000;
   try {
     return await manager.follow(sessionId, { fromSeq, untilExit, maxWaitMs });
-  } catch (e) {
-    return { error: String(e) };
+  } catch (error) {
+    return { error: String(error) };
   }
 }
 
@@ -457,7 +552,16 @@ async function appendTerminalCompleteToolMessageToParent(
     truncatedOutput: string;
   },
 ): Promise<void> {
-  const { parentConversationId, originNodeId, mode, commandLine, sessionId, nodeId, info, truncatedOutput } = opts;
+  const {
+    parentConversationId,
+    originNodeId,
+    mode,
+    commandLine,
+    sessionId,
+    nodeId,
+    info,
+    truncatedOutput,
+  } = opts;
   const tail = truncatedOutput.length > 1800 ? truncatedOutput.slice(-1800) : truncatedOutput;
   let header: string;
   if (mode === "service") {
@@ -491,6 +595,17 @@ export const terminalExecuteSchema = {
   type: "object",
   properties: {
     command: { type: "string", description: "Shell command to run (e.g. 'npm run build')" },
+    args: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Explicit argv array. When provided, command is executed directly without splitting the command string.",
+    },
+    env: {
+      type: "object",
+      additionalProperties: { type: "string" },
+      description: "Environment variable overrides merged with the current process environment.",
+    },
     timeoutMs: { type: "number", description: "Max wait in ms (default 60000)" },
     waitMode: { type: "string", enum: ["until-exit", "until-timeout", "detached"] },
     maxWaitMs: { type: "number", description: "0 means no proactive timeout" },

@@ -1,3 +1,4 @@
+import { MEMELOOP_STRUCTURED_TOOL_KEY } from "memeloop";
 import { describe, expect, it, vi } from "vitest";
 
 import type { TerminalOutputChunk } from "../../terminal/types.js";
@@ -69,7 +70,10 @@ function mockCtx(over: Partial<RpcHandlerContext> = {}): RpcHandlerContext {
 
 describe("handleRpc", () => {
   it("memeloop.auth.handshake returns nodeId", async () => {
-    const r = (await handleRpc(mockCtx(), "memeloop.auth.handshake", {})) as { ok?: boolean; nodeId?: string };
+    const r = (await handleRpc(mockCtx(), "memeloop.auth.handshake", {})) as {
+      ok?: boolean;
+      nodeId?: string;
+    };
     expect(r.ok).toBe(true);
     expect(r.nodeId).toBe("node-self");
   });
@@ -86,11 +90,9 @@ describe("handleRpc", () => {
 
   it("memeloop.auth.confirmPin validates via verifyPinCode callback", async () => {
     const verifyPinCode = vi.fn().mockResolvedValue(true);
-    const r = (await handleRpc(
-      mockCtx({ verifyPinCode }),
-      "memeloop.auth.confirmPin",
-      { confirmCode: "123456" },
-    )) as { ok?: boolean };
+    const r = (await handleRpc(mockCtx({ verifyPinCode }), "memeloop.auth.confirmPin", {
+      confirmCode: "123456",
+    })) as { ok?: boolean };
     expect(r.ok).toBe(true);
     expect(verifyPinCode).toHaveBeenCalledWith("123456");
   });
@@ -121,7 +123,9 @@ describe("handleRpc", () => {
     const pinConfirmState = { consecutiveFails: 0, lockedUntil: 0 };
     const ctx = mockCtx({ verifyPinCode, pinConfirmState });
     await handleRpc(ctx, "memeloop.auth.confirmPin", { confirmCode: "111111" });
-    const ok = (await handleRpc(ctx, "memeloop.auth.confirmPin", { confirmCode: "222222" })) as { ok?: boolean };
+    const ok = (await handleRpc(ctx, "memeloop.auth.confirmPin", { confirmCode: "222222" })) as {
+      ok?: boolean;
+    };
     expect(ok.ok).toBe(true);
     expect(pinConfirmState.consecutiveFails).toBe(0);
   });
@@ -154,11 +158,10 @@ describe("handleRpc", () => {
   });
 
   it("memeloop.sync.pullMissingMessages filters known ids", async () => {
-    const r = (await handleRpc(
-      mockCtx(),
-      "memeloop.sync.pullMissingMessages",
-      { conversationId: "c1", knownMessageIds: ["m-new"] },
-    )) as { messages?: unknown[] };
+    const r = (await handleRpc(mockCtx(), "memeloop.sync.pullMissingMessages", {
+      conversationId: "c1",
+      knownMessageIds: ["m-new"],
+    })) as { messages?: unknown[] };
     expect(r.messages).toEqual([]);
   });
 
@@ -198,7 +201,9 @@ describe("handleRpc", () => {
       onInteractionPrompt: vi.fn().mockReturnValue(() => {}),
     };
     const r = (await handleRpc(
-      mockCtx({ terminalManager: terminalManager as unknown as RpcHandlerContext["terminalManager"] }),
+      mockCtx({
+        terminalManager: terminalManager as unknown as RpcHandlerContext["terminalManager"],
+      }),
       "memeloop.terminal.follow",
       { sessionId: "s1", fromSeq: 2 },
     )) as { nextSeq?: number };
@@ -210,12 +215,60 @@ describe("handleRpc", () => {
     });
   });
 
+  it("memeloop.terminal.start forwards explicit args/env and preserves structured summary", async () => {
+    const appendMessage = vi.fn().mockResolvedValue(undefined);
+    const upsertConversationMetadata = vi.fn().mockResolvedValue(undefined);
+    const terminalManager = {
+      follow: vi.fn(),
+      start: vi.fn().mockResolvedValue({ sessionId: "s-start" }),
+      list: vi.fn(),
+      get: vi.fn().mockReturnValue({ sessionId: "s-start", status: "running" }),
+      respond: vi.fn(),
+      cancel: vi.fn(),
+      onOutput: vi.fn().mockReturnValue(() => {}),
+      onStatusUpdate: vi.fn().mockReturnValue(() => {}),
+      onInteractionPrompt: vi.fn().mockReturnValue(() => {}),
+      onSessionComplete: vi.fn().mockReturnValue(() => {}),
+      signal: vi.fn(),
+      getOutputText: vi.fn(),
+      getChunksSince: vi.fn(),
+    };
+    const base = mockCtx();
+    const ctx = {
+      ...base,
+      storage: {
+        ...base.storage,
+        appendMessage,
+        upsertConversationMetadata,
+      } as RpcHandlerContext["storage"],
+      terminalManager: terminalManager as unknown as RpcHandlerContext["terminalManager"],
+    };
+
+    const r = (await handleRpc(ctx, "memeloop.terminal.start", {
+      command: "C:/Program Files/node.exe",
+      args: ["-e", "console.log(process.env.TEST_FLAG)"],
+      env: { TEST_FLAG: "1" },
+      mode: "await",
+    })) as any;
+
+    expect(terminalManager.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "C:/Program Files/node.exe",
+        args: ["-e", "console.log(process.env.TEST_FLAG)"],
+        env: { TEST_FLAG: "1" },
+      }),
+    );
+    expect(r.sessionId).toBe("s-start");
+    expect(r[MEMELOOP_STRUCTURED_TOOL_KEY]?.summary).toContain(
+      "[terminal.start await] C:/Program Files/node.exe -e console.log(process.env.TEST_FLAG)",
+    );
+  });
+
   it("memeloop.agent.resolveApproval returns ok", async () => {
-    const r = (await handleRpc(
-      mockCtx(),
-      "memeloop.agent.resolveApproval",
-      { approvalId: "a1", decision: "allow" },
-    )) as { ok?: boolean };
+    const r = (await handleRpc(mockCtx(), "memeloop.agent.resolveApproval", {
+      approvalId: "a1",
+      decision: "allow",
+    })) as { ok?: boolean };
     expect(r.ok).toBe(true);
   });
 
@@ -241,7 +294,10 @@ describe("handleRpc", () => {
         content: "u",
       },
     ]);
-    const ctx = { ...base, storage: { ...base.storage, getMessages } as RpcHandlerContext["storage"] };
+    const ctx = {
+      ...base,
+      storage: { ...base.storage, getMessages } as RpcHandlerContext["storage"],
+    };
     const r = (await handleRpc(ctx, "memeloop.chat.pullSubAgentLog", {
       conversationId: "spawn:x",
       knownMessageIds: ["a"],
@@ -261,9 +317,16 @@ describe("handleRpc", () => {
       role: "tool" as const,
       content: "out",
     };
-    const getMessages = vi.fn().mockImplementation(async (cid: string) => (cid === "terminal:sid-1" ? [storedMsg] : []));
-    const ctx = { ...base, storage: { ...base.storage, getMessages } as RpcHandlerContext["storage"] };
-    const r = (await handleRpc(ctx, "memeloop.chat.pullTerminalSession", { sessionId: "sid-1" })) as {
+    const getMessages = vi
+      .fn()
+      .mockImplementation(async (cid: string) => (cid === "terminal:sid-1" ? [storedMsg] : []));
+    const ctx = {
+      ...base,
+      storage: { ...base.storage, getMessages } as RpcHandlerContext["storage"],
+    };
+    const r = (await handleRpc(ctx, "memeloop.chat.pullTerminalSession", {
+      sessionId: "sid-1",
+    })) as {
       source?: string;
       messages?: unknown[];
     };
@@ -276,7 +339,9 @@ describe("handleRpc", () => {
     const getMessages = vi.fn().mockResolvedValue([]);
     const terminalManager = {
       get: vi.fn().mockReturnValue({ sessionId: "s-mem", status: "running" }),
-      getChunksSince: vi.fn().mockReturnValue([{ sessionId: "s-mem", seq: 1, stream: "stdout", data: "ok", ts: 1 }]),
+      getChunksSince: vi
+        .fn()
+        .mockReturnValue([{ sessionId: "s-mem", seq: 1, stream: "stdout", data: "ok", ts: 1 }]),
       follow: vi.fn(),
       start: vi.fn(),
       list: vi.fn(),
@@ -291,7 +356,10 @@ describe("handleRpc", () => {
       storage: { ...base.storage, getMessages } as RpcHandlerContext["storage"],
       terminalManager: terminalManager as unknown as RpcHandlerContext["terminalManager"],
     };
-    const r = (await handleRpc(ctx, "memeloop.chat.pullTerminalSession", { sessionId: "s-mem", fromSeq: 1 })) as {
+    const r = (await handleRpc(ctx, "memeloop.chat.pullTerminalSession", {
+      sessionId: "s-mem",
+      fromSeq: 1,
+    })) as {
       source?: string;
       chunks?: Array<{ data?: string }>;
     };

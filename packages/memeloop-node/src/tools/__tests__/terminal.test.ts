@@ -56,8 +56,46 @@ describe("terminal tools", () => {
       waitMode: "until-exit",
     })) as any;
     expect(manager.start).toHaveBeenCalled();
+    expect(manager.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "echo",
+        args: ["hello"],
+        env: undefined,
+      }),
+    );
     expect(manager.follow).toHaveBeenCalled();
     expect(res.stdout).toContain("ok");
+  });
+
+  it("terminal.execute prefers explicit args and env without splitting command", async () => {
+    await registry.tools.get("terminal.execute")!({
+      command: "C:/Program Files/node.exe",
+      args: ["-e", "console.log(process.env.TEST_FLAG)"],
+      env: { TEST_FLAG: "1" },
+      waitMode: "until-exit",
+    });
+
+    expect(manager.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "C:/Program Files/node.exe",
+        args: ["-e", "console.log(process.env.TEST_FLAG)"],
+        env: { TEST_FLAG: "1" },
+      }),
+    );
+  });
+
+  it("terminal.execute rejects invalid structured args/env", async () => {
+    const badArgs = (await registry.tools.get("terminal.execute")!({
+      command: "node",
+      args: ["-e", 1] as any,
+    })) as any;
+    expect(badArgs.error).toContain("Invalid 'args'");
+
+    const badEnv = (await registry.tools.get("terminal.execute")!({
+      command: "node",
+      env: { TEST_FLAG: 1 } as any,
+    })) as any;
+    expect(badEnv.error).toContain("Invalid 'env'");
   });
 
   it("terminal.execute validates command", async () => {
@@ -68,7 +106,10 @@ describe("terminal tools", () => {
   it("terminal.respond validates args and success path", async () => {
     const bad = (await registry.tools.get("terminal.respond")!({ sessionId: "s1" })) as any;
     expect(bad.error).toContain("Missing sessionId or input");
-    const ok = (await registry.tools.get("terminal.respond")!({ sessionId: "s1", input: "y" })) as any;
+    const ok = (await registry.tools.get("terminal.respond")!({
+      sessionId: "s1",
+      input: "y",
+    })) as any;
     expect(ok.ok).toBe(true);
   });
 
@@ -135,7 +176,10 @@ describe("terminal tools", () => {
     };
 
     // Re-register tools with storage option enabled.
-    registerTerminalTools(localRegistry as any, localManager, { storage: {} as any, nodeId: "node-x" });
+    registerTerminalTools(localRegistry as any, localManager, {
+      storage: {} as any,
+      nodeId: "node-x",
+    });
 
     const res = (await localRegistry.tools.get("terminal.execute")!({
       command: "echo hi",
@@ -161,7 +205,10 @@ describe("terminal tools", () => {
     const cancelBad = (await registry.tools.get("terminal.cancel")!({})) as any;
     expect(cancelBad.error).toContain("Missing sessionId");
 
-    const respondBad = (await registry.tools.get("terminal.respond")!({ sessionId: "s1", input: "x" })) as any;
+    const respondBad = (await registry.tools.get("terminal.respond")!({
+      sessionId: "s1",
+      input: "x",
+    })) as any;
     expect(respondBad.error).toContain("boom");
   });
 });
