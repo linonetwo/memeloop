@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-deprecated */
+/* eslint-disable @typescript-eslint/no-unsafe-return */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createFetchLLMProvider } from "../fetchProvider.js";
@@ -11,8 +14,7 @@ afterEach(() => {
 
 describe("createFetchLLMProvider", () => {
   it("returns AsyncIterable for stream:true and text/event-stream", async () => {
-    const sse =
-      'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' + "data: [DONE]\n\n";
+    const sse = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' + "data: [DONE]\n\n";
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response(new TextEncoder().encode(sse), {
         status: 200,
@@ -79,10 +81,83 @@ describe("createFetchLLMProvider", () => {
     expect(raw).toBe("hello from model");
   });
 
+  it("maps modelId to model for OpenAI-compatible providers", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "cmpl-3",
+          choices: [{ message: { role: "assistant", content: "ok" } }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    ) as typeof fetch;
+
+    const provider = createFetchLLMProvider({
+      name: "siliconflow",
+      baseUrl: "https://api.siliconflow.cn/v1",
+      apiKey: "sk-test",
+    });
+
+    await provider.chat({
+      modelId: "siliconflow/Qwen/Qwen3.5-397B-A17B",
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "https://api.siliconflow.cn/v1/chat/completions",
+      expect.objectContaining({
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hello" }],
+          model: "Qwen/Qwen3.5-397B-A17B",
+        }),
+      }),
+    );
+  });
+
+  it("accepts host-root, /v1 base URL, and full endpoint URL forms", async () => {
+    globalThis.fetch = vi.fn().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: "cmpl-4",
+            choices: [{ message: { role: "assistant", content: "ok" } }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    ) as typeof fetch;
+
+    const request = { model: "zai-org/GLM-4.6", messages: [{ role: "user", content: "hi" }] };
+
+    await createFetchLLMProvider({
+      name: "siliconflow",
+      baseUrl: "https://api.siliconflow.cn",
+      apiKey: "sk-test",
+    }).chat(request);
+    await createFetchLLMProvider({
+      name: "siliconflow",
+      baseUrl: "https://api.siliconflow.cn/v1",
+      apiKey: "sk-test",
+    }).chat(request);
+    await createFetchLLMProvider({
+      name: "siliconflow",
+      baseUrl: "https://api.siliconflow.cn/v1/chat/completions",
+      apiKey: "sk-test",
+    }).chat(request);
+
+    const urls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => call[0],
+    );
+    expect(urls).toEqual([
+      "https://api.siliconflow.cn/v1/chat/completions",
+      "https://api.siliconflow.cn/v1/chat/completions",
+      "https://api.siliconflow.cn/v1/chat/completions",
+    ]);
+  });
+
   it("covers SSE blocks without data: lines and non-JSON data payload", async () => {
     const sse =
       "\n\n" +
-      'data: not-json\n\n' +
+      "data: not-json\n\n" +
       'data: {"choices":[{"delta":{"content":"hi2"}}]}\n\n' +
       "data: [DONE]\n\n";
     globalThis.fetch = vi.fn().mockResolvedValue(
@@ -122,6 +197,8 @@ describe("createFetchLLMProvider", () => {
       apiKey: "",
     });
 
-    await expect(provider.chat({ stream: false, messages: [] })).rejects.toThrow("LLM request failed: 500 bad");
+    await expect(provider.chat({ stream: false, messages: [] })).rejects.toThrow(
+      "LLM request failed: 500 bad",
+    );
   });
 });

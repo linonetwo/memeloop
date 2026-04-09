@@ -1,11 +1,25 @@
 import type { ILLMProvider } from "memeloop";
 import type { ProviderEntry } from "../config";
 
-async function* parseOpenAiSseStream(res: Response): AsyncGenerator<unknown, void, unknown> {
-  if (!res.body) {
+function normalizeOpenAiCompatibleChatUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  if (!trimmed) {
+    throw new Error("Provider baseUrl is required");
+  }
+  if (/\/v1\/chat\/completions$/i.test(trimmed) || /\/chat\/completions$/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (/\/v1$/i.test(trimmed)) {
+    return `${trimmed}/chat/completions`;
+  }
+  return `${trimmed}/v1/chat/completions`;
+}
+
+async function* parseOpenAiSseStream(response: Response): AsyncGenerator<unknown, void, unknown> {
+  if (!response.body) {
     return;
   }
-  const reader = res.body.getReader();
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   try {
@@ -15,10 +29,10 @@ async function* parseOpenAiSseStream(res: Response): AsyncGenerator<unknown, voi
         break;
       }
       buf += decoder.decode(value, { stream: true });
-      let sep: number;
-      while ((sep = buf.indexOf("\n\n")) >= 0) {
-        const block = buf.slice(0, sep);
-        buf = buf.slice(sep + 2);
+      let separator: number;
+      while ((separator = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, separator);
+        buf = buf.slice(separator + 2);
         const dataLine = block.split("\n").find((l) => l.startsWith("data:"));
         if (!dataLine) {
           continue;
@@ -45,16 +59,21 @@ async function* parseOpenAiSseStream(res: Response): AsyncGenerator<unknown, voi
  */
 export function createFetchLLMProvider(entry: ProviderEntry): ILLMProvider {
   const { name, baseUrl, apiKey } = entry;
-  const url = baseUrl.replace(/\/$/, "") + "/v1/chat/completions";
+  const url = normalizeOpenAiCompatibleChatUrl(baseUrl);
 
   return {
     name,
     model: undefined,
     async chat(request: unknown): Promise<unknown> {
       const body =
-        typeof request === "object" && request !== null
-          ? { ...(request as object) }
-          : { messages: [] };
+        typeof request === "object" && request !== null ? { ...request } : { messages: [] };
+      const payload = body as Record<string, unknown>;
+      const modelId = typeof payload.modelId === "string" ? payload.modelId.trim() : "";
+      if (modelId && typeof payload.model !== "string") {
+        const slashIndex = modelId.indexOf("/");
+        payload.model = slashIndex >= 0 ? modelId.slice(slashIndex + 1) : modelId;
+      }
+      delete payload.modelId;
       const streamRequested = Boolean((body as { stream?: boolean }).stream);
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
@@ -63,20 +82,20 @@ export function createFetchLLMProvider(entry: ProviderEntry): ILLMProvider {
         headers["Authorization"] = `Bearer ${apiKey}`;
       }
 
-      const res = await fetch(url, {
+      const response = await fetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify(body),
+        body: JSON.stringify(payload),
       });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`LLM request failed: ${res.status} ${text}`);
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`LLM request failed: ${response.status} ${text}`);
       }
-      const ct = res.headers.get("content-type") ?? "";
+      const ct = response.headers.get("content-type") ?? "";
       if (streamRequested && ct.includes("text/event-stream")) {
-        return parseOpenAiSseStream(res);
+        return parseOpenAiSseStream(response);
       }
-      const json = (await res.json()) as {
+      const json = (await response.json()) as {
         choices?: Array<{ message?: { content?: string } }>;
       };
       const text = json?.choices?.[0]?.message?.content;
