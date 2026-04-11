@@ -80,6 +80,11 @@ describe("remoteAgent dogfood e2e", () => {
     });
 
     const workerRelativePath = path.join("worker-output", "dogfood-result.txt");
+    const workerDataDir = path.join(tempRoot, "worker-data");
+    const workerWorkspaceDir = path.join(tempRoot, "worker-workspace");
+
+    fs.mkdirSync(workerDataDir, { recursive: true });
+    fs.mkdirSync(workerWorkspaceDir, { recursive: true });
 
     const mock = await startMockOpenAI({
       replyText: `<tool_use name="file.write">{"path":"${workerRelativePath.replace(/\\/g, "/")}","content":"created by remote worker"}</tool_use>`,
@@ -93,11 +98,8 @@ describe("remoteAgent dogfood e2e", () => {
         providers: [{ name: "oai", baseUrl: mock.baseUrl, apiKey: "k" }],
         tools: { allowlist: ["file.read", "file.write"] },
       },
-      dataDir: (() => {
-        const workerDataDir = path.join(tempRoot, "worker-data");
-        fs.mkdirSync(workerDataDir, { recursive: true });
-        return workerDataDir;
-      })(),
+      dataDir: workerDataDir,
+      fileBaseDir: workerWorkspaceDir,
     });
     cleanups.push(async () => {
       await new Promise<void>((resolve) =>
@@ -106,7 +108,8 @@ describe("remoteAgent dogfood e2e", () => {
         }),
       );
     });
-    const outputFile = path.join(tempRoot, "worker-data", workerRelativePath);
+    const outputFile = path.join(workerWorkspaceDir, workerRelativePath);
+    const dataDirOutputFile = path.join(workerDataDir, workerRelativePath);
 
     const controlNoiseKeyPair = await generateX25519KeyPairForNoise();
 
@@ -138,6 +141,7 @@ describe("remoteAgent dogfood e2e", () => {
     expect(typeof result.remoteConversationId).toBe("string");
     expect(typeof result.summary).toBe("string");
     expect(fs.existsSync(outputFile)).toBe(true);
+    expect(fs.existsSync(dataDirOutputFile)).toBe(false);
     expect(fs.readFileSync(outputFile, "utf8")).toBe("created by remote worker");
     expect(String(result.summary)).toContain("file.write");
   }, 20_000);

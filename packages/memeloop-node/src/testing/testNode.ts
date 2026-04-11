@@ -1,5 +1,5 @@
-import http from "node:http";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -8,9 +8,9 @@ import type { NoiseStaticKeyPair, WsAuthOptions } from "memeloop";
 import { generateX25519KeyPairForNoise } from "memeloop";
 
 import type { NodeConfig } from "../config";
-import { createNodeRuntime } from "../runtime/index";
 import type { RpcHandlerContext } from "../network";
 import { startNodeServerWithMdns } from "../network";
+import { createNodeRuntime } from "../runtime/index";
 import type { ITerminalSessionManager } from "../terminal";
 
 export interface StartedTestNode {
@@ -20,12 +20,12 @@ export interface StartedTestNode {
   /** 与本节点 WS 服务端 Noise 静态密钥一致；出站连接时作 initiator 使用。 */
   noiseStaticKeyPair: NoiseStaticKeyPair;
   /** Register an extra tool on this node (e.g. Cucumber / integration tests). */
-  registerTool(id: string, impl: (args: Record<string, unknown>) => unknown | Promise<unknown>): void;
+  registerTool(id: string, impl: (arguments_: Record<string, unknown>) => Promise<unknown>): void;
   /** Read persisted messages for a conversation (TaskAgent + runtime). */
   getConversationMessages(conversationId: string): Promise<ChatMessage[]>;
 }
 
-function createTempDir(prefix: string): string {
+function createTemporaryDirectory(prefix: string): string {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   return base;
 }
@@ -36,6 +36,7 @@ export async function startTestNode(
     port?: number;
     config?: Partial<NodeConfig>;
     dataDir?: string;
+    fileBaseDir?: string;
     terminalManager?: ITerminalSessionManager;
     wikiBasePath?: string;
     wsAuth?: WsAuthOptions;
@@ -47,12 +48,13 @@ export async function startTestNode(
     tools: { allowlist: [], blocklist: [] },
     ...(options?.config ?? {}),
   };
-  const dataDir = options?.dataDir ?? createTempDir(`memeloop-node-${nodeId}-`);
+  const dataDirectory = options?.dataDir ?? createTemporaryDirectory(`memeloop-node-${nodeId}-`);
+  const fileBaseDirectory = options?.fileBaseDir ?? dataDirectory;
   const { runtime, storage, wikiManager, toolRegistry, agentDefinitions, fileBaseDirResolved } =
     createNodeRuntime({
       config,
-      dataDir,
-      fileBaseDir: dataDir,
+      dataDir: dataDirectory,
+      fileBaseDir: fileBaseDirectory,
       terminalManager: options?.terminalManager,
       wikiBasePath: options?.wikiBasePath,
       localNodeId: nodeId,
@@ -66,7 +68,11 @@ export async function startTestNode(
     wikiManager,
     toolRegistry,
     nodeId,
-    mcpServers: (config.mcpServers ?? []).map((s) => ({ name: s.name, command: s.command, args: s.args })),
+    mcpServers: (config.mcpServers ?? []).map((s) => ({
+      name: s.name,
+      command: s.command,
+      args: s.args,
+    })),
     agentDefinitions,
     fileBaseDir: fileBaseDirResolved,
   };
@@ -90,7 +96,7 @@ export async function startTestNode(
     port: address.port,
     nodeId,
     noiseStaticKeyPair,
-    registerTool(id: string, impl: (args: Record<string, unknown>) => unknown | Promise<unknown>) {
+    registerTool(id: string, impl: (arguments_: Record<string, unknown>) => Promise<unknown>) {
       toolRegistry.registerTool(id, impl);
     },
     getConversationMessages(conversationId: string) {
@@ -98,4 +104,3 @@ export async function startTestNode(
     },
   };
 }
-
