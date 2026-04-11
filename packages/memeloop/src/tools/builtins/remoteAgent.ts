@@ -2,6 +2,87 @@ import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from "../structured
 import type { BuiltinToolContext, BuiltinToolImpl } from "./types.js";
 
 const TOOL_ID = "remoteAgent";
+const REMOTE_LOG_POLL_INTERVAL_MS = 500;
+const REMOTE_LOG_IDLE_POLLS = 2;
+
+type RemoteConversationMessage = {
+  messageId?: string;
+  role?: string;
+  content?: unknown;
+};
+
+function messageContentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (content == null) return "";
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return Object.prototype.toString.call(content);
+  }
+}
+
+function getRemoteStreamChunkContent(chunk: unknown): unknown {
+  if (chunk != null && typeof chunk === "object" && "content" in chunk) {
+    return Reflect.get(chunk, "content");
+  }
+
+  return undefined;
+}
+
+function summarizeRemoteMessages(messages: RemoteConversationMessage[]): string {
+  const relevant = messages.filter((message) => message.role && message.role !== "user");
+  if (relevant.length === 0) {
+    return "(task dispatched; waiting for remote output)";
+  }
+  const joined = relevant
+    .map((message) => {
+      const role = typeof message.role === "string" ? message.role : "message";
+      const content = messageContentToText(message.content).trim();
+      return content.length > 0 ? `[${role}] ${content}` : "";
+    })
+    .filter((line) => line.length > 0)
+    .join("\n");
+  return joined.trim() || "(task dispatched; remote messages had no readable content)";
+}
+
+async function collectRemoteConversationSummary(
+  sendRpc: NonNullable<BuiltinToolContext["sendRpcToNode"]>,
+  nodeId: string,
+  conversationId: string,
+  timeoutMs: number,
+): Promise<string> {
+  const startedAt = Date.now();
+  const knownMessageIds = new Set<string>();
+  const collectedMessages: RemoteConversationMessage[] = [];
+  let idlePolls = 0;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const response = (await sendRpc(nodeId, "memeloop.chat.pullSubAgentLog", {
+      conversationId,
+      knownMessageIds: [...knownMessageIds],
+    })) as { messages?: RemoteConversationMessage[] };
+    const newMessages = Array.isArray(response?.messages) ? response.messages : [];
+
+    if (newMessages.length > 0) {
+      idlePolls = 0;
+      for (const message of newMessages) {
+        if (typeof message.messageId === "string" && message.messageId.length > 0) {
+          knownMessageIds.add(message.messageId);
+        }
+        collectedMessages.push(message);
+      }
+    } else if (collectedMessages.some((message) => message.role && message.role !== "user")) {
+      idlePolls += 1;
+      if (idlePolls >= REMOTE_LOG_IDLE_POLLS) {
+        break;
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, REMOTE_LOG_POLL_INTERVAL_MS));
+  }
+
+  return summarizeRemoteMessages(collectedMessages);
+}
 
 export const remoteAgentConfigSchema = {
   type: "object",
@@ -14,15 +95,18 @@ export const remoteAgentConfigSchema = {
 } as const;
 
 /** List nodes and their definitions (for tool description / agent choice). No args. */
-export const remoteAgentListImpl: BuiltinToolImpl = async (_args, context) => {
-  const getPeers = context.getPeers;
-  const sendRpc = context.sendRpcToNode;
+export const remoteAgentListImpl: BuiltinToolImpl = async (_arguments, context) => {
+  const getPeers = context.getPeers ? async () => context.getPeers?.() : undefined;
+  const sendRpc = context.sendRpcToNode
+    ? async (nodeId: string, method: string, parameters: unknown) =>
+        context.sendRpcToNode?.(nodeId, method, parameters)
+    : undefined;
 
   if (!getPeers) {
     return { nodes: [], error: "Peer list not configured (no getPeers)." };
   }
 
-  const peers = await getPeers();
+  const peers = (await getPeers()) ?? [];
   const online = peers.filter((p) => p.status === "online");
   const result: { nodeId: string; name: string; definitions?: unknown[] }[] = [];
 
@@ -49,16 +133,19 @@ export const remoteAgentListImpl: BuiltinToolImpl = async (_args, context) => {
   return { nodes: result };
 };
 
-export const remoteAgentImpl: BuiltinToolImpl = async (args, context) => {
-  const nodeId = args.nodeId as string | undefined;
-  const definitionId = args.definitionId as string | undefined;
-  const message = args.message as string | undefined;
+export const remoteAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
+  const nodeId = arguments_.nodeId as string | undefined;
+  const definitionId = arguments_.definitionId as string | undefined;
+  const message = arguments_.message as string | undefined;
 
   if (!nodeId || !definitionId || typeof message !== "string") {
-    return remoteAgentListImpl(args, context);
+    return remoteAgentListImpl(arguments_, context);
   }
 
-  const sendRpc = context.sendRpcToNode;
+  const sendRpc = context.sendRpcToNode
+    ? async (nodeId: string, method: string, parameters: unknown) =>
+        context.sendRpcToNode?.(nodeId, method, parameters)
+    : undefined;
   if (!sendRpc) {
     return {
       error: "Remote node RPC not configured (no sendRpcToNode). Connect to peer nodes first.",
@@ -68,7 +155,6 @@ export const remoteAgentImpl: BuiltinToolImpl = async (args, context) => {
   try {
     const createResult = (await sendRpc(nodeId, "memeloop.agent.create", {
       definitionId,
-      initialMessage: message,
     })) as { conversationId?: string };
     const conversationId = createResult?.conversationId;
     if (!conversationId) {
@@ -93,10 +179,14 @@ export const remoteAgentImpl: BuiltinToolImpl = async (args, context) => {
     const chunks: string[] = [];
     if (subscribeStream) {
       await new Promise<void>((resolve) => {
-        const unsub = subscribeStream!(nodeId, conversationId, (chunk) => {
+        const unsub = subscribeStream(nodeId, conversationId, (chunk) => {
           if (typeof chunk === "string") chunks.push(chunk);
-          else if (chunk != null && typeof chunk === "object" && "content" in (chunk as object))
-            chunks.push(String((chunk as { content?: unknown }).content ?? ""));
+          else {
+            const chunkContent = getRemoteStreamChunkContent(chunk);
+            if (chunkContent !== undefined) {
+              chunks.push(messageContentToText(chunkContent));
+            }
+          }
         });
         setTimeout(() => {
           unsub();
@@ -108,7 +198,7 @@ export const remoteAgentImpl: BuiltinToolImpl = async (args, context) => {
     const fullSummary =
       chunks.length > 0
         ? chunks.join("").trim()
-        : "(task dispatched; stream not configured or no output yet)";
+        : await collectRemoteConversationSummary(sendRpc, nodeId, conversationId, streamWaitMs);
     const shortSummary = truncateToolSummary(fullSummary);
     return {
       summary: fullSummary,
@@ -124,8 +214,8 @@ export const remoteAgentImpl: BuiltinToolImpl = async (args, context) => {
         },
       },
     };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : messageContentToText(error);
     return { error: `remoteAgent failed: ${message}` };
   }
 };

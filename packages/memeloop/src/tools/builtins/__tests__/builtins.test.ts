@@ -9,14 +9,25 @@ import type {
 } from "../../../types.js";
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from "../../structuredToolResult.js";
 import {
-  registerBuiltinTools,
+  ASK_QUESTION_TOOL_ID,
   mcpClientImpl,
-  spawnAgentImpl,
+  registerBuiltinTools,
   remoteAgentImpl,
   remoteAgentListImpl,
-  ASK_QUESTION_TOOL_ID,
+  spawnAgentImpl,
 } from "../index.js";
 import type { BuiltinToolContext } from "../types.js";
+
+type RemoteStreamCapableContext = BuiltinToolContext & {
+  subscribeRemoteStream?: (
+    nodeId: string,
+    conversationId: string,
+    onChunk: (chunk: unknown) => void,
+  ) => () => void;
+};
+
+type RemoteAgentErrorResult = { error?: string };
+type RemoteAgentListResult = { nodes?: unknown[]; error?: string };
 
 function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): BuiltinToolContext {
   const storage: IAgentStorage = {
@@ -82,9 +93,8 @@ describe("builtin tools", () => {
       };
       const context = createMinimalContext();
       registerBuiltinTools(registry, context);
-      const allCalls = (
-        registry.registerTool as unknown as ReturnType<typeof vi.fn>
-      ).mock.calls.map((c) => c[0]);
+      const registerToolMock = vi.mocked(registry.registerTool);
+      const allCalls = registerToolMock.mock.calls.map(([toolId]) => toolId);
       expect(allCalls).not.toContain("terminal.execute");
       expect(allCalls).not.toContain("file.read");
       expect(allCalls).not.toContain("knowledge.wikiSearch");
@@ -157,18 +167,19 @@ describe("builtin tools", () => {
       async function* runLocalEmpty(): AsyncIterable<{ type: "thinking"; data: string }> {
         yield { type: "thinking", data: "..." };
       }
-      const emptyCtx = createMinimalContext({ runLocalAgent: runLocalEmpty as any });
+      const emptyCtx = createMinimalContext({
+        runLocalAgent: runLocalEmpty as BuiltinToolContext["runLocalAgent"],
+      });
       const empty = (await spawnAgentImpl(
         { definitionId: "def1", message: "hi" },
         emptyCtx,
       )) as Record<string, unknown>;
       expect(empty.summary).toBe("(no text output)");
 
-      const badCtx = createMinimalContext({
-        runLocalAgent: (() => {
-          throw new Error("boom");
-        }) as any,
-      });
+      const throwingRunLocalAgent: NonNullable<BuiltinToolContext["runLocalAgent"]> = () => {
+        throw new Error("boom");
+      };
+      const badCtx = createMinimalContext({ runLocalAgent: throwingRunLocalAgent });
       const err = (await spawnAgentImpl({ definitionId: "def1", message: "hi" }, badCtx)) as {
         error?: string;
       };
@@ -177,20 +188,34 @@ describe("builtin tools", () => {
   });
 
   describe("remoteAgentImpl", () => {
-    it("returns __memeloopToolResult with sub-agent detailRef when RPC succeeds", async () => {
+    it("dispatches once and falls back to remote chat log summary when stream is unavailable", async () => {
       const sendRpc = vi
         .fn()
         .mockResolvedValueOnce({ conversationId: "remote-conv-1" })
-        .mockResolvedValueOnce(undefined);
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce({
+          messages: [
+            { messageId: "assistant-1", role: "assistant", content: "remote run complete" },
+          ],
+        })
+        .mockResolvedValueOnce({ messages: [] })
+        .mockResolvedValueOnce({ messages: [] });
       const context = createMinimalContext({ sendRpcToNode: sendRpc });
       const result = (await remoteAgentImpl(
         { nodeId: "peer1", definitionId: "d1", message: "m1" },
         context,
       )) as Record<string, unknown>;
-      expect(sendRpc).toHaveBeenCalledWith("peer1", "memeloop.agent.create", expect.any(Object));
+      expect(sendRpc).toHaveBeenCalledWith("peer1", "memeloop.agent.create", {
+        definitionId: "d1",
+      });
       expect(sendRpc).toHaveBeenCalledWith("peer1", "memeloop.agent.send", expect.any(Object));
+      expect(sendRpc).toHaveBeenCalledWith("peer1", "memeloop.chat.pullSubAgentLog", {
+        conversationId: "remote-conv-1",
+        knownMessageIds: [],
+      });
       expect(result.remoteNodeId).toBe("peer1");
       expect(result.remoteConversationId).toBe("remote-conv-1");
+      expect(result.summary).toBe("[assistant] remote run complete");
       const structured = result[MEMELOOP_STRUCTURED_TOOL_KEY] as {
         summary: string;
         detailRef: { type: string; conversationId: string; nodeId: string };
@@ -200,30 +225,53 @@ describe("builtin tools", () => {
       expect(structured.detailRef.conversationId).toBe("remote-conv-1");
     });
 
+    it("uses streamed output when subscribeRemoteStream is available", async () => {
+      const sendRpc = vi
+        .fn()
+        .mockResolvedValueOnce({ conversationId: "remote-conv-2" })
+        .mockResolvedValueOnce(undefined);
+      const context = createMinimalContext({
+        sendRpcToNode: sendRpc,
+        remoteAgentStreamTimeoutMs: 20,
+      }) as RemoteStreamCapableContext;
+      context.subscribeRemoteStream = (_nodeId, _conversationId, onChunk) => {
+        onChunk({ content: "streamed remote output" });
+        return () => undefined;
+      };
+
+      const result = (await remoteAgentImpl(
+        { nodeId: "peer1", definitionId: "d1", message: "m1" },
+        context,
+      )) as Record<string, unknown>;
+
+      expect(result.summary).toBe("streamed remote output");
+      expect(sendRpc).toHaveBeenCalledTimes(2);
+    });
+
     it("covers list fallback, missing conversationId and rpc failure", async () => {
       const listCtx = createMinimalContext({
         getPeers: async () => [{ identity: { nodeId: "n1", name: "N1" }, status: "online" }],
-      } as any);
-      const list = await remoteAgentImpl({}, listCtx);
-      expect((list as any).nodes).toBeDefined();
+      });
+      const list = (await remoteAgentImpl({}, listCtx)) as RemoteAgentListResult;
+      expect(list.nodes).toBeDefined();
 
       const missingConv = createMinimalContext({
         sendRpcToNode: vi.fn().mockResolvedValueOnce({}),
       });
-      const r1 = await remoteAgentImpl(
+      const r1 = (await remoteAgentImpl(
         { nodeId: "n1", definitionId: "d1", message: "m1" },
         missingConv,
-      );
-      expect((r1 as any).error).toContain("did not return conversationId");
+      )) as RemoteAgentErrorResult;
+      expect(r1.error).toContain("did not return conversationId");
 
       const rpcFail = createMinimalContext({
         sendRpcToNode: vi.fn().mockRejectedValue(new Error("rpc-bad")),
       });
-      const r2 = await remoteAgentImpl(
+      const r2 = (await remoteAgentImpl(
         { nodeId: "n1", definitionId: "d1", message: "m1" },
         rpcFail,
-      );
-      expect((r2 as any).error).toContain("remoteAgent failed");
+      )) as RemoteAgentErrorResult;
+      expect(r2.error).toContain("remoteAgent failed");
     });
   });
 
