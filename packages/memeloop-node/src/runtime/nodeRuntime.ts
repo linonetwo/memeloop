@@ -1,35 +1,35 @@
 import path from "node:path";
 
 import {
-  SQLiteAgentStorage,
-  ProviderRegistry,
-  createMemeLoopRuntime,
-  registerBuiltinTools,
-  createTaskAgent,
+  type AgentFrameworkContext,
+  type BuiltinToolContext,
   ChatSyncEngine,
-  PeerNodeSyncAdapter,
+  createMemeLoopRuntime,
+  createTaskAgent,
   getBuiltinAgentDefinitions,
-  type MemeLoopRuntime,
   type IAgentStorage,
   type ILLMProvider,
   type INetworkService,
-  type AgentFrameworkContext,
   type IToolRegistry,
-  type BuiltinToolContext,
+  type MemeLoopRuntime,
+  PeerNodeSyncAdapter,
+  ProviderRegistry,
+  registerBuiltinTools,
+  SQLiteAgentStorage,
 } from "memeloop";
 
+import type { AgentDefinition } from "@memeloop/protocol";
 import type { NodeConfig } from "../config";
 import { normalizeAgentDefinition } from "../config";
-import type { ITerminalSessionManager } from "../terminal";
+import { type IWikiManager, TiddlyWikiWikiManager } from "../knowledge/wikiManager";
 import type { PeerConnectionManager } from "../network/peerConnectionManager";
-import { ToolRegistry } from "./toolRegistry";
-import { createRegistryLLMProvider } from "./llmAdapter";
+import { createPeerRpcSyncTransport } from "../network/rpcSyncTransport";
+import type { ITerminalSessionManager } from "../terminal";
+import { registerNodeEnvironmentTools } from "../tools/registerNodeEnvironmentTools";
 import { createAiSdkProvider, resolveProviderModelId } from "./aiSdkProvider";
 import { createFetchLLMProvider } from "./fetchProvider";
-import { registerNodeEnvironmentTools } from "../tools/registerNodeEnvironmentTools";
-import { FileWikiManager, type IWikiManager } from "../knowledge/wikiManager";
-import { createPeerRpcSyncTransport } from "../network/rpcSyncTransport";
-import type { AgentDefinition } from "@memeloop/protocol";
+import { createRegistryLLMProvider } from "./llmAdapter";
+import { ToolRegistry } from "./toolRegistry";
 
 /**
  * Optional overrides merged into `registerBuiltinTools` (peer RPC, `notifyAskQuestion`, etc.).
@@ -132,8 +132,12 @@ const noopNetwork: INetworkService = {
 };
 
 const defaultLogger: AgentFrameworkContext["logger"] = {
-  warn: (...a: unknown[]) => console.warn("[memeloop-node]", ...a),
-  error: (...a: unknown[]) => console.error("[memeloop-node]", ...a),
+  warn: (...arguments_: unknown[]) => {
+    console.warn("[memeloop-node]", ...arguments_);
+  },
+  error: (...arguments_: unknown[]) => {
+    console.error("[memeloop-node]", ...arguments_);
+  },
 };
 
 /**
@@ -156,8 +160,8 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
         "createNodeRuntime: provide `dataDir` for SQLite storage, or inject `storage`",
       );
     }
-    const dbPath = path.join(options.dataDir, "memeloop.db");
-    storage = new SQLiteAgentStorage({ filename: dbPath });
+    const databasePath = path.join(options.dataDir, "memeloop.db");
+    storage = new SQLiteAgentStorage({ filename: databasePath });
   }
 
   const builtinDefs = getBuiltinAgentDefinitions();
@@ -208,6 +212,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   const conversationCancellation = options.conversationCancellation ?? new Set<string>();
   const network = options.network ?? noopNetwork;
   const logger = options.logger ?? defaultLogger;
+  const terminalManager = options.terminalManager;
 
   const taskAgentConfig: AgentFrameworkContext["taskAgent"] = {
     maxIterations: options.taskAgent?.maxIterations ?? 32,
@@ -215,22 +220,21 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
       options.taskAgent?.isCancelled ?? ((cid: string) => conversationCancellation.has(cid)),
     waitForTerminalSession:
       options.taskAgent?.waitForTerminalSession ??
-      (options.terminalManager
+      (terminalManager
         ? (sessionId) =>
             new Promise((resolve) => {
-              const mgr = options.terminalManager!;
               const finish = (info: import("../terminal/types.js").TerminalSessionInfo) => {
                 resolve({
                   exitCode: info.exitCode,
-                  truncatedOutput: mgr.getOutputText(sessionId, { tailChars: 12_000 }),
+                  truncatedOutput: terminalManager.getOutputText(sessionId, { tailChars: 12_000 }),
                 });
               };
-              const cur = mgr.get(sessionId);
-              if (cur && cur.status !== "running") {
-                finish(cur);
+              const current = terminalManager.get(sessionId);
+              if (current && current.status !== "running") {
+                finish(current);
                 return;
               }
-              const off = mgr.onSessionComplete((sid, info) => {
+              const off = terminalManager.onSessionComplete((sid, info) => {
                 if (sid !== sessionId) return;
                 off();
                 finish(info);
@@ -275,21 +279,21 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     runLocalAgent,
     getPeers: peerMgr ? async () => peerMgr.getPeers() : embedBuiltin.getPeers,
     sendRpcToNode: peerMgr
-      ? (nodeId, method, params) => peerMgr.sendRpcToNode(nodeId, method, params)
+      ? (nodeId, method, parameters) => peerMgr.sendRpcToNode(nodeId, method, parameters)
       : embedBuiltin.sendRpcToNode,
     mcpCallRemote: peerMgr
-      ? async (nodeId, serverName, toolName, args) =>
+      ? async (nodeId, serverName, toolName, arguments_) =>
           peerMgr.sendRpcToNode(nodeId, "memeloop.mcp.callTool", {
             serverName,
             toolName,
-            arguments: args,
+            arguments: arguments_,
           })
       : embedBuiltin.mcpCallRemote,
     remoteAgentStreamTimeoutMs: streamTimeout,
     notifyAskQuestion: embedBuiltin.notifyAskQuestion,
   });
 
-  const fileBaseResolved = options.fileBaseDir ?? process.cwd();
+  const fileBaseResolved = options.fileBaseDir ?? config.fileBaseDir ?? process.cwd();
 
   let wikiManager: IWikiManager | undefined;
   let refreshWikiAgentDefinitions: (() => Promise<void>) | undefined;
@@ -297,20 +301,21 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   if (options.wikiManager) {
     wikiManager = options.wikiManager;
   } else if (options.wikiBasePath) {
-    wikiManager = new FileWikiManager(options.wikiBasePath);
+    wikiManager = new TiddlyWikiWikiManager(options.wikiBasePath);
   }
 
   if (wikiManager) {
+    const currentWikiManager = wikiManager;
     const wikiIds =
       options.wikiAgentDefinitionWikiIds?.length && options.wikiAgentDefinitionWikiIds.length > 0
         ? options.wikiAgentDefinitionWikiIds
         : ["default"];
     refreshWikiAgentDefinitions = async () => {
       for (const wid of wikiIds) {
-        wikiManager!.clearWikiCache(wid);
+        currentWikiManager.clearWikiCache(wid);
       }
       for (const wid of wikiIds) {
-        const defs = await wikiManager!.listAgentDefinitionsFromWiki(wid);
+        const defs = await currentWikiManager.listAgentDefinitionsFromWiki(wid);
         for (const d of defs) {
           definitionById.set(d.id, d);
         }
@@ -320,8 +325,8 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
         storage.seedAgentDefinitions(agentDefinitions);
       }
     };
-    void refreshWikiAgentDefinitions().catch((e) => {
-      context.logger?.warn?.("wiki agent definitions load failed", e);
+    void refreshWikiAgentDefinitions().catch((error: unknown) => {
+      context.logger?.warn?.("wiki agent definitions load failed", error);
     });
   }
 
@@ -338,8 +343,8 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   const runtime = createMemeLoopRuntime(context);
   let syncEngine: ChatSyncEngine | undefined;
   if (peerMgr) {
-    const transport = createPeerRpcSyncTransport((nid, method, params) =>
-      peerMgr.sendRpcToNode(nid, method, params),
+    const transport = createPeerRpcSyncTransport((nid, method, parameters) =>
+      peerMgr.sendRpcToNode(nid, method, parameters),
     );
     syncEngine = new ChatSyncEngine({
       nodeId: syncNodeId,

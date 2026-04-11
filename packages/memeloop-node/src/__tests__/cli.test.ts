@@ -1,37 +1,264 @@
+import { EventEmitter } from "node:events";
+import type { FSWatcher } from "node:fs";
+import path from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const state = vi.hoisted(() => ({
-  config: {} as any,
-  saved: null as any,
-  startNodeServerWithMdns: vi.fn().mockResolvedValue(undefined),
-  createNodeRuntime: vi.fn(),
-  cloudClient: {
-    getJwt: vi.fn().mockResolvedValue({ accessToken: "jwt-x" }),
-    getJwtByChallenge: vi.fn().mockResolvedValue({ accessToken: "jwt-x" }),
-    registerNode: vi.fn().mockResolvedValue(undefined),
-    heartbeat: vi.fn().mockResolvedValue(undefined),
-  },
-  registerWithOtp: vi.fn().mockResolvedValue({ nodeId: "node-x", nodeSecret: "sec-x" }),
-}));
+import type { NodeConfig } from "../config";
 
-const imGetBindingMock = vi.hoisted(() => vi.fn());
-const imSetBindingMock = vi.hoisted(() => vi.fn());
+interface MockNodeKeypair {
+  nodeId: string;
+  x25519PublicKey: string;
+  x25519PrivateKey: string;
+  ed25519PublicKey: string;
+  ed25519PrivateKey: string;
+  createdAt: number;
+}
+
+interface MockCloudJwtResult {
+  accessToken: string;
+}
+
+interface MockCloudRegisterOtpResult {
+  nodeId: string;
+  nodeSecret?: string;
+}
+
+interface MockBinding extends Record<string, unknown> {
+  imUserId: string;
+  pendingQuestionId: string;
+}
+
+interface MockConversationSource {
+  channelId: string;
+  imUserId: string;
+}
+
+interface MockConversationMeta {
+  sourceChannel?: MockConversationSource;
+}
+
+interface AskQuestionPayload {
+  questionId: string;
+  question: string;
+  conversationId?: string;
+  inputType?: "single-select" | "multi-select" | "text";
+  options?: Array<{ label: string; description?: string }>;
+  allowFreeform?: boolean;
+}
+
+interface MockRuntime {
+  __notifyAskQuestion?: (payload: AskQuestionPayload) => void;
+}
+
+interface MockStorage {
+  getConversationMeta: (conversationId: string) => Promise<MockConversationMeta | undefined>;
+}
+
+interface MockCreateNodeRuntimeOptions {
+  dataDir?: string;
+  fileBaseDir?: string;
+  builtinToolContext?: {
+    notifyAskQuestion?: (payload: AskQuestionPayload) => void;
+  };
+}
+
+interface MockCreateNodeRuntimeResult {
+  runtime: MockRuntime;
+  storage: MockStorage;
+  toolRegistry: Record<string, unknown>;
+  wikiManager: unknown;
+  agentDefinitions: unknown[];
+  fileBaseDirResolved: string;
+  refreshWikiAgentDefinitions?: () => Promise<void>;
+}
+
+interface MockStartNodeServerOptions {
+  rpcContext: {
+    runtime: MockRuntime;
+  };
+}
+
+interface CliTestState {
+  config: NodeConfig;
+  saved: NodeConfig | null;
+  createNodeRuntime: ReturnType<
+    typeof vi.fn<(options: MockCreateNodeRuntimeOptions) => MockCreateNodeRuntimeResult>
+  >;
+  startNodeServerWithMdns: ReturnType<
+    typeof vi.fn<(options: MockStartNodeServerOptions) => Promise<void>>
+  >;
+  registerWithOtp: ReturnType<
+    typeof vi.fn<
+      (
+        code: string,
+        keys?: { x25519PublicKey?: string; ed25519PublicKey?: string },
+      ) => Promise<MockCloudRegisterOtpResult>
+    >
+  >;
+  cloudClient: {
+    getJwt: ReturnType<
+      typeof vi.fn<(nodeId: string, nodeSecret: string) => Promise<MockCloudJwtResult>>
+    >;
+    getJwtByChallenge: ReturnType<
+      typeof vi.fn<(nodeId: string, privateKey: string) => Promise<MockCloudJwtResult>>
+    >;
+    registerNode: ReturnType<
+      typeof vi.fn<(payload: unknown, jwt: string) => Promise<{ ok: boolean }>>
+    >;
+    heartbeat: ReturnType<typeof vi.fn<(nodeId: string, jwt: string) => Promise<{ ok: boolean }>>>;
+  };
+}
+
+const realSetInterval = global.setInterval;
+const realSetTimeout = global.setTimeout;
+
+function createMockFsWatcher(): FSWatcher {
+  const eventEmitter = new EventEmitter();
+  const watcher = eventEmitter as EventEmitter & {
+    close: () => FSWatcher;
+    ref: () => FSWatcher;
+    unref: () => FSWatcher;
+  };
+
+  watcher.close = () => watcher as unknown as FSWatcher;
+  watcher.ref = () => watcher as unknown as FSWatcher;
+  watcher.unref = () => watcher as unknown as FSWatcher;
+
+  return watcher as unknown as FSWatcher;
+}
+
+function createIntervalHandle(): ReturnType<typeof setInterval> {
+  const timer = realSetInterval(() => undefined, 60_000);
+  clearInterval(timer);
+  return timer;
+}
+
+function createTimeoutHandle(): ReturnType<typeof setTimeout> {
+  const timer = realSetTimeout(() => undefined, 0);
+  clearTimeout(timer);
+  return timer;
+}
+
+function runTimerHandler(handler: Parameters<typeof setInterval>[0]): void {
+  if (typeof handler === "function") {
+    handler();
+  }
+}
+
+function createRuntimeResult(
+  overrides: Partial<MockCreateNodeRuntimeResult> = {},
+): MockCreateNodeRuntimeResult {
+  return {
+    runtime: {},
+    storage: {
+      getConversationMeta: vi
+        .fn<(conversationId: string) => Promise<MockConversationMeta | undefined>>()
+        .mockResolvedValue(undefined),
+    },
+    toolRegistry: {},
+    wikiManager: undefined,
+    agentDefinitions: [],
+    fileBaseDirResolved: "/tmp",
+    refreshWikiAgentDefinitions: undefined,
+    ...overrides,
+  };
+}
+
+function getSavedConfig(): NodeConfig {
+  if (!state.saved) {
+    throw new Error("Expected config to be saved");
+  }
+
+  return state.saved;
+}
+
+function getFirstRuntimeCreationOptions(): MockCreateNodeRuntimeOptions {
+  const firstRuntimeCreationOptions = state.createNodeRuntime.mock.calls.at(0)?.[0];
+
+  if (!firstRuntimeCreationOptions) {
+    throw new Error("Expected createNodeRuntime to be called");
+  }
+
+  return firstRuntimeCreationOptions;
+}
+
+function getNotifyAskQuestionHandler(runtime: MockRuntime): (payload: AskQuestionPayload) => void {
+  if (!runtime.__notifyAskQuestion) {
+    throw new Error("Expected runtime notifyAskQuestion handler to be wired");
+  }
+
+  return runtime.__notifyAskQuestion;
+}
+
+const state = vi.hoisted(
+  (): CliTestState => ({
+    config: {},
+    saved: null,
+    createNodeRuntime:
+      vi.fn<(options: MockCreateNodeRuntimeOptions) => MockCreateNodeRuntimeResult>(),
+    startNodeServerWithMdns: vi.fn<(options: MockStartNodeServerOptions) => Promise<void>>(),
+    registerWithOtp: vi
+      .fn<
+        (
+          code: string,
+          keys?: { x25519PublicKey?: string; ed25519PublicKey?: string },
+        ) => Promise<MockCloudRegisterOtpResult>
+      >()
+      .mockResolvedValue({ nodeId: "node-x", nodeSecret: "sec-x" }),
+    cloudClient: {
+      getJwt: vi
+        .fn<(nodeId: string, nodeSecret: string) => Promise<MockCloudJwtResult>>()
+        .mockResolvedValue({ accessToken: "jwt-x" }),
+      getJwtByChallenge: vi
+        .fn<(nodeId: string, privateKey: string) => Promise<MockCloudJwtResult>>()
+        .mockResolvedValue({ accessToken: "jwt-x" }),
+      registerNode: vi
+        .fn<(payload: unknown, jwt: string) => Promise<{ ok: boolean }>>()
+        .mockResolvedValue({ ok: true }),
+      heartbeat: vi
+        .fn<(nodeId: string, jwt: string) => Promise<{ ok: boolean }>>()
+        .mockResolvedValue({ ok: true }),
+    },
+  }),
+);
+
+const fsWatchMock = vi.hoisted(() =>
+  vi.fn<(filePath: string, options: { recursive?: boolean }, listener: () => void) => FSWatcher>(),
+);
+const sendTelegramTextMessageMock = vi.hoisted(() =>
+  vi.fn<(botToken: string, imUserId: string, text: string) => Promise<void>>(),
+);
+const autoConnectDiscoveredPeerMock = vi.hoisted(() =>
+  vi.fn<(service: unknown, nodeId: string, manager: unknown) => Promise<void>>(),
+);
+const browseMock = vi.hoisted(() =>
+  vi.fn<(options: { onServiceUp: (service: { name: string; type: string }) => void }) => void>(),
+);
+const imGetBindingMock = vi.hoisted(() =>
+  vi.fn<(channelId: string, imUserId: string) => Promise<MockBinding | undefined>>(),
+);
+const imSetBindingMock = vi.hoisted(() => vi.fn<(binding: MockBinding) => Promise<void>>());
 
 vi.mock("node:fs", () => ({
-  watch: vi.fn(),
+  watch: fsWatchMock,
 }));
 
-vi.mock("../auth/keypair.js", () => ({
-  getDefaultKeypairPath: () => "/tmp/keypair.json",
-  loadOrCreateNodeKeypair: vi.fn().mockReturnValue({
+vi.mock("../auth/keypair.js", () => {
+  const keypair: MockNodeKeypair = {
     nodeId: "kp-node-id",
     x25519PublicKey: "x-pub",
     x25519PrivateKey: "x-priv",
     ed25519PublicKey: "e-pub",
     ed25519PrivateKey: "e-priv",
     createdAt: 1,
-  }),
-}));
+  };
+
+  return {
+    getDefaultKeypairPath: () => "/tmp/keypair.json",
+    loadOrCreateNodeKeypair: vi.fn<() => MockNodeKeypair>().mockReturnValue(keypair),
+  };
+});
 
 vi.mock("../auth/noiseKeypair.js", () => ({
   nodeKeypairToNoiseStaticKeyPair: vi.fn().mockReturnValue({
@@ -41,32 +268,40 @@ vi.mock("../auth/noiseKeypair.js", () => ({
 }));
 
 vi.mock("../im/telegramAdapter.js", () => ({
-  sendTelegramTextMessage: vi.fn().mockResolvedValue(undefined),
+  sendTelegramTextMessage: sendTelegramTextMessageMock,
 }));
 
 vi.mock("../network/lanAutoConnect.js", () => ({
-  autoConnectDiscoveredPeer: vi.fn(),
+  autoConnectDiscoveredPeer: autoConnectDiscoveredPeerMock,
 }));
 
 vi.mock("../config", () => ({
   getDefaultConfigPath: () => "/tmp/memeloop-node.yaml",
-  loadConfig: () => state.config,
-  saveConfig: (cfg: any) => {
-    state.saved = cfg;
+  loadConfig: (): NodeConfig => state.config,
+  saveConfig: (config: NodeConfig) => {
+    state.saved = config;
   },
 }));
 
 vi.mock("../auth/wsAuth.js", () => ({
-  createLanPinWsAuth: () => ({ mode: "lan-pin" }),
+  createLanPinWsAuth: () => ({ mode: "lan-pin" as const }),
 }));
 
 vi.mock("../auth/index.js", () => ({
   CloudClient: class CloudClient {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    constructor(_url: string) {}
-    registerWithOtp(code: string) {
-      return state.registerWithOtp(code);
+    readonly baseUrl: string;
+
+    constructor(baseUrl: string) {
+      this.baseUrl = baseUrl;
     }
+
+    registerWithOtp(
+      code: string,
+      keys?: { x25519PublicKey?: string; ed25519PublicKey?: string },
+    ): Promise<MockCloudRegisterOtpResult> {
+      return state.registerWithOtp(code, keys);
+    }
+
     getJwt = state.cloudClient.getJwt;
     getJwtByChallenge = state.cloudClient.getJwtByChallenge;
     registerNode = state.cloudClient.registerNode;
@@ -76,54 +311,63 @@ vi.mock("../auth/index.js", () => ({
 }));
 
 vi.mock("../runtime/index.js", () => ({
-  createNodeRuntime: (...args: any[]) => state.createNodeRuntime(...args),
+  createNodeRuntime: (options: MockCreateNodeRuntimeOptions): MockCreateNodeRuntimeResult =>
+    state.createNodeRuntime(options),
 }));
 
 vi.mock("../terminal/index.js", () => ({
-  TerminalSessionManager: class TerminalSessionManager {},
+  TerminalSessionManager: class TerminalSessionManager {
+    readonly createdAt = 0;
+  },
 }));
 
 vi.mock("../network/index.js", () => ({
   PeerConnectionManager: class PeerConnectionManager {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    constructor(_opts: any) {}
+    readonly options: unknown;
+
+    constructor(options: unknown) {
+      this.options = options;
+    }
   },
-  startNodeServerWithMdns: (...args: any[]) => state.startNodeServerWithMdns(...args),
+  startNodeServerWithMdns: (options: MockStartNodeServerOptions): Promise<void> =>
+    state.startNodeServerWithMdns(options),
 }));
 
 vi.mock("../im/createImWebhookHandler.js", () => ({
-  createImWebhookHandler: vi.fn().mockReturnValue(undefined),
+  createImWebhookHandler: vi.fn<() => undefined>().mockReturnValue(undefined),
 }));
 
-vi.mock("memeloop", async () => {
-  const actual = await vi.importActual<any>("memeloop");
-  return {
-    ...actual,
-    IMChannelManager: class IMChannelManager {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      constructor(_storage: any) {}
-      getBinding = imGetBindingMock;
-      setBinding = imSetBindingMock;
-    },
-    browse: vi.fn(),
-    ConnectivityManager: class ConnectivityManager {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      constructor(_port: number) {}
-      detectPublicIP = vi.fn().mockResolvedValue(undefined);
-    },
-  };
-});
+vi.mock("memeloop", () => ({
+  IMChannelManager: class IMChannelManager {
+    readonly storage: unknown;
 
-function setArgv(args: string[]) {
+    constructor(storage: unknown) {
+      this.storage = storage;
+    }
+
+    getBinding = imGetBindingMock;
+    setBinding = imSetBindingMock;
+  },
+  browse: browseMock,
+  ConnectivityManager: class ConnectivityManager {
+    readonly port: number;
+    detectPublicIP = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    constructor(port: number) {
+      this.port = port;
+    }
+  },
+}));
+
+function setArgv(args: string[]): void {
   process.argv = ["node", "memeloop", ...args];
 }
 
-async function runCli(args: string[]) {
+async function runCli(args: string[]): Promise<void> {
   setArgv(args);
   vi.resetModules();
   await import("../cli.js");
-  // Commander action handlers are async; give event loop a tick.
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
 }
 
 describe("cli", () => {
@@ -135,40 +379,34 @@ describe("cli", () => {
   beforeEach(() => {
     state.config = {};
     state.saved = null;
-    state.createNodeRuntime.mockReset().mockReturnValue({
-      runtime: {},
-      storage: { getConversationMeta: vi.fn() },
-      toolRegistry: {},
-      wikiManager: undefined,
-      agentDefinitions: [],
-      fileBaseDirResolved: "/tmp",
-      refreshWikiAgentDefinitions: undefined,
-    });
+    state.createNodeRuntime.mockReset().mockReturnValue(createRuntimeResult());
     state.startNodeServerWithMdns.mockReset().mockResolvedValue(undefined);
     state.registerWithOtp.mockReset().mockResolvedValue({ nodeId: "node-x", nodeSecret: "sec-x" });
     state.cloudClient.getJwt.mockReset().mockResolvedValue({ accessToken: "jwt-x" });
     state.cloudClient.getJwtByChallenge.mockReset().mockResolvedValue({ accessToken: "jwt-x" });
-    state.cloudClient.registerNode.mockReset().mockResolvedValue(undefined);
-    state.cloudClient.heartbeat.mockReset().mockResolvedValue(undefined);
+    state.cloudClient.registerNode.mockReset().mockResolvedValue({ ok: true });
+    state.cloudClient.heartbeat.mockReset().mockResolvedValue({ ok: true });
+    fsWatchMock.mockReset().mockReturnValue(createMockFsWatcher());
+    sendTelegramTextMessageMock.mockReset().mockResolvedValue(undefined);
+    autoConnectDiscoveredPeerMock.mockReset().mockResolvedValue(undefined);
+    browseMock.mockReset();
     imGetBindingMock.mockReset();
-    imSetBindingMock.mockReset();
+    imSetBindingMock.mockReset().mockResolvedValue(undefined);
 
     logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    exitSpy = vi
-      .spyOn(process, "exit")
-      // commander action 内部不会在 process.exit 后 return；为了避免未捕获异常/未处理 promise，
-      // 这里用 no-op 阻止真正退出，但仍能断言 process.exit 被调用以覆盖分支。
-      .mockImplementation(((_code?: number) => undefined) as any);
+    const noopProcessExit = ((code?: string | number | null) => {
+      void code;
+      return undefined;
+    }) as unknown as typeof process.exit;
 
-    setIntervalSpy = vi
-      .spyOn(global, "setInterval")
-      .mockImplementation(((fn: any, _ms?: number) => {
-        // 不真正启动定时器，避免测试挂住。
-        void fn;
-        return 0 as any;
-      }) as any);
+    exitSpy = vi.spyOn(process, "exit").mockImplementation(noopProcessExit);
+
+    setIntervalSpy = vi.spyOn(global, "setInterval").mockImplementation((handler) => {
+      void handler;
+      return createIntervalHandle();
+    });
   });
 
   afterEach(() => {
@@ -179,28 +417,42 @@ describe("cli", () => {
   });
 
   it("status prints config summary", async () => {
-    state.config = { name: "n1", providers: [{ name: "p1" }], tools: { allowlist: ["a"], blocklist: [] } };
+    state.config = {
+      name: "n1",
+      providers: [{ name: "p1", baseUrl: "https://provider.example" }],
+      tools: { allowlist: ["a"], blocklist: [] },
+      fileBaseDir: "/workspace",
+    };
+
     await runCli(["status"]);
-    expect(logSpy).toHaveBeenCalled();
+
+    expect(logSpy).toHaveBeenCalledWith("fileBaseDir:", "/workspace");
   });
 
   it("register success saves nodeId/nodeSecret", async () => {
     state.config = { cloudUrl: "https://cloud.example" };
+
     await runCli(["register", "--otp", "123456"]);
-    expect(state.saved.nodeId).toBe("node-x");
-    expect(state.saved.nodeSecret).toBe("sec-x");
+
+    const savedConfig = getSavedConfig();
+    expect(savedConfig.nodeId).toBe("node-x");
+    expect(savedConfig.nodeSecret).toBe("sec-x");
   });
 
   it("register missing otp triggers exit", async () => {
     state.config = { cloudUrl: "https://cloud.example" };
+
     await runCli(["register", "--config", "/tmp/memeloop-node.yaml"]);
+
     expect(errSpy).toHaveBeenCalled();
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it("register missing cloud url triggers exit", async () => {
     state.config = {};
+
     await runCli(["register", "--otp", "123456", "--config", "/tmp/memeloop-node.yaml"]);
+
     expect(errSpy).toHaveBeenCalled();
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
@@ -208,28 +460,51 @@ describe("cli", () => {
   it("register with otp failure triggers exit", async () => {
     state.config = { cloudUrl: "https://cloud.example" };
     state.registerWithOtp.mockRejectedValueOnce(new Error("boom"));
+
     await runCli(["register", "--otp", "123456", "--config", "/tmp/memeloop-node.yaml"]);
+
     expect(errSpy).toHaveBeenCalled();
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it("im add/list/remove command flow", async () => {
     state.config = { im: { channels: [] } };
-    await runCli(["im", "add", "--platform", "telegram", "--token", "bt"]);
-    expect(state.saved.im.channels.length).toBe(1);
 
-    state.config = state.saved;
+    await runCli(["im", "add", "--platform", "telegram", "--token", "bt"]);
+
+    expect(getSavedConfig().im?.channels?.length).toBe(1);
+
+    state.config = getSavedConfig();
     await runCli(["im", "list"]);
     expect(logSpy).toHaveBeenCalled();
 
-    const channelId = state.config.im.channels[0].channelId;
+    const channelId = state.config.im?.channels?.[0]?.channelId;
+    if (!channelId) {
+      throw new Error("Expected IM channel to be added");
+    }
+
     await runCli(["im", "remove", channelId]);
-    expect(state.saved.im.channels.find((c: any) => c.channelId === channelId)).toBeUndefined();
+
+    const savedChannels = getSavedConfig().im?.channels ?? [];
+    expect(
+      savedChannels.find(({ channelId: savedChannelId }) => savedChannelId === channelId),
+    ).toBeUndefined();
   });
 
   it("im add unsupported platform triggers exit", async () => {
     state.config = { im: { channels: [] } };
-    await runCli(["im", "add", "--platform", "nope", "--token", "bt", "--config", "/tmp/memeloop-node.yaml"]);
+
+    await runCli([
+      "im",
+      "add",
+      "--platform",
+      "nope",
+      "--token",
+      "bt",
+      "--config",
+      "/tmp/memeloop-node.yaml",
+    ]);
+
     expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("Unsupported platform:"), "nope");
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
@@ -242,9 +517,65 @@ describe("cli", () => {
       im: { channels: [] },
     };
     process.env.NODE_ENV = "test";
+
     await runCli(["start", "--port", "38472", "--data-dir", "/tmp"]);
+
     expect(state.createNodeRuntime).toHaveBeenCalled();
     expect(state.startNodeServerWithMdns).toHaveBeenCalled();
+  });
+
+  it("start uses config fileBaseDir separately from dataDir", async () => {
+    state.config = {
+      name: "node-a",
+      providers: [],
+      tools: { allowlist: [], blocklist: [] },
+      fileBaseDir: "../workspace",
+      im: { channels: [] },
+    };
+    process.env.NODE_ENV = "test";
+
+    await runCli(["start", "--port", "38472", "--data-dir", "/tmp/data"]);
+
+    const firstRuntimeCreationOptions = getFirstRuntimeCreationOptions();
+    expect(state.createNodeRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dataDir: path.resolve("/tmp/data"),
+        fileBaseDir: path.resolve("../workspace"),
+      }),
+    );
+    expect(firstRuntimeCreationOptions.fileBaseDir).not.toBe(firstRuntimeCreationOptions.dataDir);
+  });
+
+  it("start lets cli fileBaseDir override config fileBaseDir", async () => {
+    state.config = {
+      name: "node-a",
+      providers: [],
+      tools: { allowlist: [], blocklist: [] },
+      fileBaseDir: "/config-workspace",
+      im: { channels: [] },
+    };
+    process.env.NODE_ENV = "test";
+
+    await runCli([
+      "start",
+      "--port",
+      "38472",
+      "--data-dir",
+      "/tmp/data",
+      "--file-base-dir",
+      "/cli-workspace",
+    ]);
+
+    const firstRuntimeCreationOptions = getFirstRuntimeCreationOptions();
+    expect(state.createNodeRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dataDir: path.resolve("/tmp/data"),
+        fileBaseDir: path.resolve("/cli-workspace"),
+      }),
+    );
+    expect(firstRuntimeCreationOptions.fileBaseDir).not.toBe(
+      path.resolve(state.config.fileBaseDir ?? ""),
+    );
   });
 
   it("start with cloudUrl+nodeSecret schedules heartbeat", async () => {
@@ -256,16 +587,81 @@ describe("cli", () => {
       tools: { allowlist: [], blocklist: [] },
       im: { channels: [] },
     };
-    process.env.NODE_ENV = "test"; // 不走 mdns 分支
+    process.env.NODE_ENV = "test";
 
-    // 让 setInterval 立即执行一次回调，覆盖 cli.ts 里 heartbeat 行。
-    setIntervalSpy.mockImplementation(((fn: any, _ms?: number) => {
-      fn();
-      return 0 as any;
-    }) as any);
+    setIntervalSpy.mockImplementation((handler) => {
+      runTimerHandler(handler);
+      return createIntervalHandle();
+    });
 
     await runCli(["start", "--port", "38472", "--data-dir", "/tmp"]);
+
     expect(state.cloudClient.heartbeat).toHaveBeenCalledWith(expect.any(String), "jwt-x");
+  });
+
+  it("start refreshes node jwt when heartbeat gets 401", async () => {
+    state.config = {
+      name: "node-a",
+      cloudUrl: "https://cloud.example",
+      nodeSecret: "sec-x",
+      providers: [],
+      tools: { allowlist: [], blocklist: [] },
+      im: { channels: [] },
+    };
+    process.env.NODE_ENV = "test";
+
+    state.cloudClient.getJwt
+      .mockReset()
+      .mockResolvedValueOnce({ accessToken: "jwt-initial" })
+      .mockResolvedValueOnce({ accessToken: "jwt-refreshed" });
+    state.cloudClient.heartbeat
+      .mockReset()
+      .mockRejectedValueOnce(new Error("Cloud API 401: unauthorized"))
+      .mockResolvedValueOnce({ ok: true });
+
+    setIntervalSpy.mockImplementation((handler) => {
+      runTimerHandler(handler);
+      return createIntervalHandle();
+    });
+
+    await runCli(["start", "--port", "38472", "--data-dir", "/tmp"]);
+
+    expect(state.cloudClient.getJwt).toHaveBeenCalledTimes(2);
+    expect(state.cloudClient.heartbeat).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      "jwt-initial",
+    );
+    expect(state.cloudClient.heartbeat).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      "jwt-refreshed",
+    );
+  });
+
+  it("start keeps existing jwt when heartbeat fails non-auth", async () => {
+    state.config = {
+      name: "node-a",
+      cloudUrl: "https://cloud.example",
+      nodeSecret: "sec-x",
+      providers: [],
+      tools: { allowlist: [], blocklist: [] },
+      im: { channels: [] },
+    };
+    process.env.NODE_ENV = "test";
+
+    state.cloudClient.getJwt.mockReset().mockResolvedValue({ accessToken: "jwt-x" });
+    state.cloudClient.heartbeat.mockReset().mockRejectedValueOnce(new Error("Cloud API 500: boom"));
+
+    setIntervalSpy.mockImplementation((handler) => {
+      runTimerHandler(handler);
+      return createIntervalHandle();
+    });
+
+    await runCli(["start", "--port", "38472", "--data-dir", "/tmp"]);
+
+    expect(state.cloudClient.getJwt).toHaveBeenCalledTimes(1);
+    expect(state.cloudClient.heartbeat).toHaveBeenCalledTimes(1);
   });
 
   it("start with wikiPath and refreshWikiAgentDefinitions wires fs.watch (success path)", async () => {
@@ -277,45 +673,51 @@ describe("cli", () => {
       im: { channels: [] },
     };
 
-    const refreshFn = vi.fn().mockResolvedValue(undefined);
-    state.createNodeRuntime.mockReset().mockReturnValue({
-      runtime: {},
-      storage: { getConversationMeta: vi.fn() },
-      toolRegistry: {},
-      wikiManager: undefined,
-      agentDefinitions: [],
-      fileBaseDirResolved: "/tmp",
-      refreshWikiAgentDefinitions: refreshFn,
-    });
+    const refreshWikiAgentDefinitionsMock = vi
+      .fn<() => Promise<void>>()
+      .mockResolvedValue(undefined);
+    state.createNodeRuntime
+      .mockReset()
+      .mockReturnValue(
+        createRuntimeResult({ refreshWikiAgentDefinitions: refreshWikiAgentDefinitionsMock }),
+      );
 
-    process.env.NODE_ENV = "test"; // 不走 mdns 和 cloud 注册的额外分支
-    const fsMod = await import("node:fs");
+    process.env.NODE_ENV = "test";
     const clearTimeoutSpy = vi.spyOn(global, "clearTimeout");
-    const realSetTimeout = global.setTimeout;
-    const setTimeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: any, ms?: number, ...args: any[]) => {
-      // Only fast-forward the wiki debounce timer.
-      if (ms === 900) {
-        fn(...args);
-        return 1 as any;
-      }
-      return realSetTimeout(fn, ms as any, ...args);
-    }) as any);
+    let scheduledRefreshListener: (() => void) | undefined;
 
-    let scheduleCb: any;
-    (fsMod.watch as any).mockImplementationOnce((_path: any, _opts: any, cb: any) => {
-      scheduleCb = cb;
-      return undefined;
+    const setTimeoutSpy = vi
+      .spyOn(global, "setTimeout")
+      .mockImplementation((handler, timeout, ...arguments_) => {
+        if (timeout === 900) {
+          runTimerHandler(handler);
+          return createTimeoutHandle();
+        }
+
+        return realSetTimeout(handler, timeout, ...arguments_);
+      });
+
+    fsWatchMock.mockImplementationOnce((watchedPath, watchOptions, listener) => {
+      void watchedPath;
+      void watchOptions;
+      scheduledRefreshListener = listener;
+      return createMockFsWatcher();
     });
 
     try {
       await runCli(["start", "--port", "38472", "--data-dir", "/tmp"]);
-      expect((fsMod.watch as any).mock.calls.length).toBeGreaterThan(0);
 
-      // Trigger debounce schedule twice to cover clearTimeout(debounce) branch.
-      scheduleCb();
-      scheduleCb();
+      expect(fsWatchMock.mock.calls.length).toBeGreaterThan(0);
+
+      if (!scheduledRefreshListener) {
+        throw new Error("Expected fs.watch listener to be registered");
+      }
+
+      scheduledRefreshListener();
+      scheduledRefreshListener();
+
       expect(clearTimeoutSpy).toHaveBeenCalled();
-      expect(refreshFn).toHaveBeenCalled();
+      expect(refreshWikiAgentDefinitionsMock).toHaveBeenCalled();
     } finally {
       clearTimeoutSpy.mockRestore();
       setTimeoutSpy.mockRestore();
@@ -331,23 +733,19 @@ describe("cli", () => {
       im: { channels: [] },
     };
 
-    state.createNodeRuntime.mockReset().mockReturnValue({
-      runtime: {},
-      storage: { getConversationMeta: vi.fn() },
-      toolRegistry: {},
-      wikiManager: undefined,
-      agentDefinitions: [],
-      fileBaseDirResolved: "/tmp",
-      refreshWikiAgentDefinitions: vi.fn().mockResolvedValue(undefined),
-    });
+    state.createNodeRuntime.mockReset().mockReturnValue(
+      createRuntimeResult({
+        refreshWikiAgentDefinitions: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+      }),
+    );
 
     process.env.NODE_ENV = "test";
-    const fsMod = await import("node:fs");
-    (fsMod.watch as any).mockImplementationOnce(() => {
+    fsWatchMock.mockImplementationOnce(() => {
       throw new Error("watch fail");
     });
 
     await runCli(["start", "--port", "38472", "--data-dir", "/tmp"]);
+
     expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining("watch fail"));
   });
 
@@ -361,9 +759,7 @@ describe("cli", () => {
     process.env.NODE_ENV = "production";
     delete process.env.MEMELOOP_DISABLE_MDNS;
 
-    // 让 browse 立即触发 onServiceUp，覆盖 autoConnectDiscoveredPeer 的分支行。
-    const memeloopMod = await import("memeloop");
-    (memeloopMod.browse as any).mockImplementationOnce(({ onServiceUp }: any) => {
+    browseMock.mockImplementationOnce(({ onServiceUp }) => {
       onServiceUp({ name: "svc", type: "memeloop" });
     });
 
@@ -380,10 +776,10 @@ describe("cli", () => {
       im: { channels: [] },
     };
 
-    process.env.NODE_ENV = "test"; // 避免 mdns 分支 + 真实网络逻辑
+    process.env.NODE_ENV = "test";
+
     await runCli(["start", "--port", "38472", "--data-dir", "/tmp"]);
 
-    // CloudClient mocked: getJwt/registerNode/heartbeat 不需要断言太细，关键是分支进入不会挂。
     expect(setIntervalSpy).toHaveBeenCalled();
   });
 
@@ -396,27 +792,24 @@ describe("cli", () => {
       im: { channels: [] },
     };
     process.env.NODE_ENV = "test";
+
     await runCli(["start", "--port", "38472", "--data-dir", "/tmp"]);
+
     expect(state.cloudClient.getJwtByChallenge).toHaveBeenCalled();
     expect(state.cloudClient.getJwt).not.toHaveBeenCalled();
   });
 
   it("start wires notifyAskQuestion passthrough for IM channels", async () => {
-    const telegramMod = await import("../im/telegramAdapter.js");
-    const sendTelegramTextMessage = telegramMod.sendTelegramTextMessage as any;
-
     const getConversationMeta = vi
-      .fn()
-      .mockResolvedValueOnce({}) // no src => early return
-      .mockResolvedValueOnce({ sourceChannel: { channelId: "missing", imUserId: "u-x" } }) // no ch => early return
-      .mockResolvedValueOnce({ sourceChannel: { channelId: "tg1", imUserId: "u-tg" } }) // telegram channel => send
-      .mockResolvedValueOnce({
-        sourceChannel: { channelId: "d1", imUserId: "u-discord" },
-      }); // discord channel => no send but setBinding when binding exists
+      .fn<(conversationId: string) => Promise<MockConversationMeta | undefined>>()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ sourceChannel: { channelId: "missing", imUserId: "u-x" } })
+      .mockResolvedValueOnce({ sourceChannel: { channelId: "tg1", imUserId: "u-tg" } })
+      .mockResolvedValueOnce({ sourceChannel: { channelId: "d1", imUserId: "u-discord" } });
 
     imGetBindingMock
-      .mockResolvedValueOnce(undefined) // tg1: no binding
-      .mockResolvedValueOnce({ imUserId: "u-discord", pendingQuestionId: "old" }); // d1: truthy
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ imUserId: "u-discord", pendingQuestionId: "old" });
     imSetBindingMock.mockResolvedValueOnce(undefined);
 
     state.config = {
@@ -430,37 +823,31 @@ describe("cli", () => {
         ],
       },
     };
-
     process.env.NODE_ENV = "test";
 
-    state.createNodeRuntime.mockReset().mockImplementationOnce((args: any) => {
-      return {
-        runtime: { __notifyAskQuestion: args.builtinToolContext.notifyAskQuestion },
+    state.createNodeRuntime.mockReset().mockImplementationOnce((options) =>
+      createRuntimeResult({
+        runtime: { __notifyAskQuestion: options.builtinToolContext?.notifyAskQuestion },
         storage: { getConversationMeta },
-        toolRegistry: {},
-        wikiManager: undefined,
-        agentDefinitions: [],
-        fileBaseDirResolved: "/tmp",
-        refreshWikiAgentDefinitions: undefined,
-      };
-    });
+      }),
+    );
 
-    state.startNodeServerWithMdns.mockImplementationOnce(async ({ rpcContext }: any) => {
-      // Call 4 times to cover:
-      // - no src
-      // - src but no channel
-      // - telegram channel with falsy binding
-      // - non-telegram channel with truthy binding
-      rpcContext.runtime.__notifyAskQuestion({ questionId: "q1", question: "Q1", conversationId: "c1" });
-      await new Promise((r) => setImmediate(r));
-      rpcContext.runtime.__notifyAskQuestion({ questionId: "q2", question: "Q2", conversationId: "c2" });
-      await new Promise((r) => setImmediate(r));
-      rpcContext.runtime.__notifyAskQuestion({ questionId: "q3", question: "Hello", conversationId: "c3" });
-      await new Promise((r) => setImmediate(r));
-      rpcContext.runtime.__notifyAskQuestion({ questionId: "q4", question: "Q4", conversationId: "c4" });
-      await new Promise((r) => setImmediate(r));
+    state.startNodeServerWithMdns.mockImplementationOnce(async ({ rpcContext }) => {
+      const notifyAskQuestionHandler = getNotifyAskQuestionHandler(rpcContext.runtime);
 
-      expect(sendTelegramTextMessage).toHaveBeenCalledWith("bt1", "u-tg", "❓ Hello");
+      notifyAskQuestionHandler({ questionId: "q1", question: "Q1", conversationId: "c1" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      notifyAskQuestionHandler({ questionId: "q2", question: "Q2", conversationId: "c2" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      notifyAskQuestionHandler({ questionId: "q3", question: "Hello", conversationId: "c3" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      notifyAskQuestionHandler({ questionId: "q4", question: "Q4", conversationId: "c4" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(sendTelegramTextMessageMock).toHaveBeenCalledWith("bt1", "u-tg", "❓ Hello");
       expect(imSetBindingMock).toHaveBeenCalledWith(
         expect.objectContaining({ pendingQuestionId: "q4" }),
       );
@@ -469,4 +856,3 @@ describe("cli", () => {
     await runCli(["start", "--port", "38472", "--data-dir", "/tmp"]);
   });
 });
-

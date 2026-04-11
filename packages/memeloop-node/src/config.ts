@@ -2,9 +2,9 @@
  * YAML config: nodeSecret, providers, tools, wiki path.
  */
 
+import yaml from "js-yaml";
 import fs from "node:fs";
 import path from "node:path";
-import yaml from "js-yaml";
 
 import type { AgentDefinition, IMPlatformType } from "@memeloop/protocol";
 
@@ -97,6 +97,8 @@ export interface NodeConfig {
   tools?: ToolPermissionConfig;
   /** Wiki storage path (local knowledge base). */
   wikiPath?: string;
+  /** Base directory exposed to file.* tools. */
+  fileBaseDir?: string;
   /** 从哪些 wiki 子目录加载带 MemeLoop AgentDefinition 标签的 tiddler（默认 ["default"]，与 wiki.* 工具 wikiId 一致） */
   wikiAgentDefinitionWikiIds?: string[];
   /** Node display name. */
@@ -123,7 +125,7 @@ export function loadConfig(configPath?: string): NodeConfig {
   const p = configPath ?? getDefaultConfigPath();
   if (!fs.existsSync(p)) return {};
   const raw = fs.readFileSync(p, "utf-8");
-  const data = yaml.load(raw) as unknown;
+  const data = yaml.load(raw);
   if (data && typeof data === "object" && !Array.isArray(data)) {
     return data as NodeConfig;
   }
