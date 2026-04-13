@@ -1,28 +1,30 @@
 /**
- * Post-handshake framing for Noise + ChaCha20-Poly1305 (plan §7.5.5).
+ * Post-handshake framing for Noise + IETF ChaCha20-Poly1305 (plan §7.5.5).
  * Wire format: `[4-byte BE length][8-byte BE counter][ciphertext + 16-byte Poly1305 tag]`.
- * IV = 12 bytes: 4 zero + 8-byte counter (big-endian). Handshake / key derivation is done elsewhere.
+ * Nonce = 12 bytes: 4 zero + 8-byte counter (big-endian). Handshake / key derivation is done elsewhere.
  */
 
-import { createCipheriv, createDecipheriv } from "node:crypto";
+import * as sodium from "sodium-universal";
 
-/** ChaCha20-Poly1305 AEAD（Node crypto 支持；类型定义未必列入 CipherGCMTypes）。 */
-const ALGO = "chacha20-poly1305" as const;
 const TAG_LENGTH = 16;
 const COUNTER_BYTES = 8;
+const NONCE_BYTES = 12;
+const EMPTY_AAD = Buffer.alloc(0);
 
-function ivFromCounter(counter: bigint): Buffer {
-  const iv = Buffer.alloc(12, 0);
-  iv.writeBigUInt64BE(counter, 4);
-  return iv;
+function nonceFromCounter(counter: bigint): Buffer {
+  const nonce = Buffer.alloc(NONCE_BYTES, 0);
+  nonce.writeBigUInt64BE(counter, NONCE_BYTES - COUNTER_BYTES);
+  return nonce;
 }
 
 export function encryptNoiseFrame(key: Buffer, counter: bigint, plaintext: Buffer): Buffer {
   if (key.length !== 32) throw new Error("noiseTransport: key must be 32 bytes");
-  const iv = ivFromCounter(counter);
-  const cipher = createCipheriv(ALGO, key, iv, { authTagLength: TAG_LENGTH });
-  const enc = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const tag = cipher.getAuthTag();
+  const nonce = nonceFromCounter(counter);
+  const sealed = Buffer.alloc(plaintext.length + TAG_LENGTH);
+  sodium.crypto_aead_chacha20poly1305_ietf_encrypt(sealed, plaintext, EMPTY_AAD, null, nonce, key);
+
+  const enc = sealed.subarray(0, plaintext.length);
+  const tag = sealed.subarray(plaintext.length);
   const counterBe = Buffer.alloc(COUNTER_BYTES);
   counterBe.writeBigUInt64BE(counter, 0);
   const body = Buffer.concat([counterBe, enc, tag]);
@@ -31,7 +33,7 @@ export function encryptNoiseFrame(key: Buffer, counter: bigint, plaintext: Buffe
   return Buffer.concat([header, body]);
 }
 
-/** 握手完成后封装 JSON-RPC：发送用 sendKey，接收用 recvKey（与 {@link getNoiseXxPeerCryptoMaterial} 一致）。 */
+/** Post-handshake JSON-RPC framing using sendKey for encrypt and recvKey for decrypt. */
 export class NoiseJsonRpcCodec {
   private sendCounter = 0n;
 
@@ -47,25 +49,47 @@ export class NoiseJsonRpcCodec {
   }
 
   decrypt(frame: Buffer): string {
-    const { plaintext } = decryptNoiseFrame(this.recvKey, frame);
+    const { plaintext, rest } = decryptNoiseFrame(this.recvKey, frame);
+    if (rest.length > 0) {
+      throw new Error("noiseTransport: unexpected trailing bytes");
+    }
     return plaintext.toString("utf8");
   }
 }
 
-export function decryptNoiseFrame(key: Buffer, frame: Buffer): { counter: bigint; plaintext: Buffer; rest: Buffer } {
+export function decryptNoiseFrame(
+  key: Buffer,
+  frame: Buffer,
+): { counter: bigint; plaintext: Buffer; rest: Buffer } {
   if (key.length !== 32) throw new Error("noiseTransport: key must be 32 bytes");
-  if (frame.length < 4 + COUNTER_BYTES + TAG_LENGTH) throw new Error("noiseTransport: frame too short");
-  const len = frame.readUInt32BE(0);
-  if (len < COUNTER_BYTES + TAG_LENGTH || frame.length < 4 + len) {
+  if (frame.length < 4 + COUNTER_BYTES + TAG_LENGTH) {
+    throw new Error("noiseTransport: frame too short");
+  }
+  const length = frame.readUInt32BE(0);
+  if (length < COUNTER_BYTES + TAG_LENGTH || frame.length < 4 + length) {
     throw new Error("noiseTransport: invalid frame length");
   }
-  const body = frame.subarray(4, 4 + len);
+  const body = frame.subarray(4, 4 + length);
   const counter = body.subarray(0, COUNTER_BYTES).readBigUInt64BE(0);
-  const iv = ivFromCounter(counter);
+  const nonce = nonceFromCounter(counter);
   const ct = body.subarray(COUNTER_BYTES, body.length - TAG_LENGTH);
   const tag = body.subarray(body.length - TAG_LENGTH);
-  const decipher = createDecipheriv(ALGO, key, iv, { authTagLength: TAG_LENGTH });
-  decipher.setAuthTag(tag);
-  const plaintext = Buffer.concat([decipher.update(ct), decipher.final()]);
-  return { counter, plaintext, rest: frame.subarray(4 + len) };
+  const sealed = Buffer.concat([ct, tag]);
+  const plaintext = Buffer.alloc(sealed.length - TAG_LENGTH);
+  try {
+    sodium.crypto_aead_chacha20poly1305_ietf_decrypt(
+      plaintext,
+      null,
+      sealed,
+      EMPTY_AAD,
+      nonce,
+      key,
+    );
+  } catch (error) {
+    throw new Error("noiseTransport: authentication failed", {
+      cause: error,
+    });
+  }
+
+  return { counter, plaintext, rest: frame.subarray(4 + length) };
 }
