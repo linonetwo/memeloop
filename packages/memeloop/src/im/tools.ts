@@ -8,7 +8,7 @@ import type { IMChannelManager } from "./channelManager.js";
 export const imToolDefinitions = [
   {
     name: "im.listConversations",
-    description: "列出可切换的会话（由 memeloop-node registerImSessionTools 注册，仅 IM 来源会话可用）。",
+    description: "列出可切换的会话（由 memeloop-cli registerImSessionTools 注册，仅 IM 来源会话可用）。",
   },
   {
     name: "im.switchConversation",

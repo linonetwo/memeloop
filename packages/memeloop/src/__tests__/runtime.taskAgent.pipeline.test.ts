@@ -5,7 +5,7 @@ import { createMemeLoopRuntime } from "../runtime.js";
 import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from "../types.js";
 
 /**
- * Ensures MemeLoopRuntime + createTaskAgent (same wiring as memeloop-node) runs LLM rounds and registry tools,
+ * Ensures MemeLoopRuntime + createTaskAgent (same wiring as memeloop-cli) runs LLM rounds and registry tools,
  * not only persisting user messages.
  */
 describe("createMemeLoopRuntime + createTaskAgent pipeline", () => {

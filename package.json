@@ -15,7 +15,7 @@
     "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\"",
     "test": "pnpm -r run test",
     "test:unit": "pnpm -r run test:unit",
-    "test:ci": "pnpm test && pnpm --filter memeloop-node run test:e2e",
+    "test:ci": "pnpm test && pnpm --filter memeloop-cli run test:e2e",
     "test:coverage": "pnpm -r run test:coverage",
     "prepare": "husky"
   },

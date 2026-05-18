@@ -60,7 +60,7 @@ export interface IAgentStorage {
    */
   getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
 
-  /** IM 用户与会话绑定（memeloop-node + SQLite 持久化）。 */
+  /** IM 用户与会话绑定（memeloop-cli + SQLite 持久化）。 */
   getImBinding?(channelId: string, imUserId: string): Promise<ImChannelBindingRecord | null>;
   setImBinding?(record: ImChannelBindingRecord): Promise<void>;
 }
@@ -170,7 +170,7 @@ export interface AgentFrameworkContext {
   /** TaskAgent ReAct 行为（从 TidGi-Desktop taskAgent 迁移） */
   taskAgent?: TaskAgentRuntimeOptions;
   /**
-   * 由宿主注入（如 memeloop-node）：存在时 `createMemeLoopRuntime` 在用户发消息后运行完整 TaskAgent 管线。
+   * 由宿主注入（如 memeloop-cli）：存在时 `createMemeLoopRuntime` 在用户发消息后运行完整 TaskAgent 管线。
    */
   runTaskAgent?: (input: TaskAgentInput) => TaskAgentGenerator;
   /**
@@ -180,7 +180,7 @@ export interface AgentFrameworkContext {
   /** 将 `ChatMessage` 持久化（可选，由 runtime 注入） */
   persistAgentMessage?: (message: ChatMessage) => Promise<void>;
   /**
-   * 由 `createMemeLoopRuntime` 写入取消标记，`taskAgent.isCancelled` 应与此集合一致（如 memeloop-node）。
+   * 由 `createMemeLoopRuntime` 写入取消标记，`taskAgent.isCancelled` 应与此集合一致（如 memeloop-cli）。
    */
   conversationCancellation?: Set<string>;
   /**

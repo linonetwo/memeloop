@@ -1,10 +1,10 @@
 # MemeLoop Core & Node — Architecture Notes
 
-High-level design and operational concerns for the `memeloop` and `memeloop-node` packages. Implementation details live in source.
+High-level design and operational concerns for the `memeloop` and `memeloop-cli` packages. Implementation details live in source.
 
 ## Runtime and TaskAgent
 
-- **MemeLoopRuntime** delegates user turns to **TaskAgent** when `AgentFrameworkContext.runTaskAgent` is set (memeloop-node wires this after `createTaskAgent`). Without it, runtime only persists user messages (library/test mode).
+- **MemeLoopRuntime** delegates user turns to **TaskAgent** when `AgentFrameworkContext.runTaskAgent` is set (memeloop-cli wires this after `createTaskAgent`). Without it, runtime only persists user messages (library/test mode).
 - **Cancellation**: `conversationCancellation` (a `Set<string>`) aligns with `taskAgent.isCancelled(conversationId)`. `cancelAgent` adds the id; a new message clears it for that conversation.
 
 ## LLM Provider (Node)
@@ -13,7 +13,7 @@ High-level design and operational concerns for the `memeloop` and `memeloop-node
 
 ## Peer Sync
 
-- **ChatSyncEngine** runs against **ChatSyncPeer** implementations. For JSON-RPC peers, **memeloop-node** exposes:
+- **ChatSyncEngine** runs against **ChatSyncPeer** implementations. For JSON-RPC peers, **memeloop-cli** exposes:
   - `memeloop.sync.exchangeVersionVector`
   - `memeloop.sync.pullMissingMetadata`
   - `memeloop.sync.pullMissingMessages`
@@ -35,16 +35,16 @@ High-level design and operational concerns for the `memeloop` and `memeloop-node
 
 ## Automated testing (Runtime + LLM)
 
-- **Unit (memeloop / Vitest)**: `runtime.taskAgent.pipeline.test.ts` wires `createMemeLoopRuntime` with `createTaskAgent` (same as memeloop-node) and a scripted `ILLMProvider`, asserting a full **tool loop** (user → tool → assistant) and `initialMessage` turns.
-- **Integration (memeloop-node / Vitest)**: `nodeRuntime.openaiIntegration.test.ts` starts a local **mock OpenAI** HTTP server (`testing/mockOpenAI.ts`) returning JSON `chat/completions`, uses real **SQLite** storage, and asserts both a simple reply and a **two-step** mock sequence (tool call then final text).
+- **Unit (memeloop / Vitest)**: `runtime.taskAgent.pipeline.test.ts` wires `createMemeLoopRuntime` with `createTaskAgent` (same as memeloop-cli) and a scripted `ILLMProvider`, asserting a full **tool loop** (user → tool → assistant) and `initialMessage` turns.
+- **Integration (memeloop-cli / Vitest)**: `nodeRuntime.openaiIntegration.test.ts` starts a local **mock OpenAI** HTTP server (`testing/mockOpenAI.ts`) returning JSON `chat/completions`, uses real **SQLite** storage, and asserts both a simple reply and a **two-step** mock sequence (tool call then final text).
 - **E2E (Cucumber)**: `features/agent.feature` drives a real node over WebSocket JSON-RPC; the “tool loop” scenario uses `replySequence` on the mock server plus a test-only `e2eEcho` tool registered on the started node.
 
 ## Build Order (Monorepo)
 
-After changing **@memeloop/protocol** or **memeloop** types consumed by memeloop-node:
+After changing **@memeloop/protocol** or **memeloop** types consumed by memeloop-cli:
 
 1. `pnpm --filter @memeloop/protocol build`
 2. `pnpm --filter memeloop build`
-3. Then build or typecheck **memeloop-node**
+3. Then build or typecheck **memeloop-cli**
 
 Stale `dist/*.d.ts` in dependencies will otherwise produce confusing TypeScript errors.

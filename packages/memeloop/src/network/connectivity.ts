@@ -65,7 +65,7 @@ export function resolveConnectAddress(
 
 /**
  * Connectivity manager: holds public IP, optional frp address, and local port.
- * Call detectPublicIP() on start; startFrpTunnel() is provided by caller (e.g. memeloop-node).
+ * Call detectPublicIP() on start; startFrpTunnel() is provided by caller (e.g. memeloop-cli).
  */
 export class ConnectivityManager {
   private state: ConnectivityState = {
@@ -97,7 +97,7 @@ export class ConnectivityManager {
   }
 
   /**
-   * Start frp tunnel. startTunnelFn should be provided by the host (e.g. memeloop-node)
+   * Start frp tunnel. startTunnelFn should be provided by the host (e.g. memeloop-cli)
    * and can use frp-web/bridge or spawn frpc. Returns stop function.
    */
   async startFrpTunnel(

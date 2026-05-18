@@ -2,7 +2,7 @@
 
 ## 测试目标
 
-验证 memeloop-node 的核心使用场景：
+验证 memeloop-cli 的核心使用场景：
 
 - 用户在 Node A（控制节点）通过 remoteAgent 工具
 - 连接到 Node B（工作节点）
@@ -102,7 +102,7 @@
 #### 1.1 实现 screenshot 工具
 
 ```typescript
-// packages/memeloop-node/src/tools/screenshot.ts
+// packages/memeloop-cli/src/tools/screenshot.ts
 export const screenshotTool = {
   name: "screenshot",
   description: "Take a screenshot of a URL or local application",
@@ -122,7 +122,7 @@ export const screenshotTool = {
 #### 1.2 实现 demo 工具
 
 ```typescript
-// packages/memeloop-node/src/tools/demo.ts
+// packages/memeloop-cli/src/tools/demo.ts
 export const demoStartTool = {
   name: "demo.start",
   description: "Start a development server and return access URL",
@@ -165,7 +165,7 @@ export const demoScreenshotTool = {
 #### 2.1 可配置超时
 
 ```yaml
-# memeloop-node.yaml
+# memeloop-cli.yaml
 remoteAgentStreamTimeoutMs: 120000 # 2 minutes
 ```
 

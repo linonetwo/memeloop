@@ -31,7 +31,7 @@ export interface JsonRpcFailure {
 
 export type JsonRpcResponse<T = unknown> = JsonRpcSuccess<T> | JsonRpcFailure;
 
-/** memeloop-node `rpcHandlers.ts` 中已实现的主要 JSON-RPC 方法（可随实现扩展）。 */
+/** memeloop-cli `rpcHandlers.ts` 中已实现的主要 JSON-RPC 方法（可随实现扩展）。 */
 export interface RpcMethodMap {
   "memeloop.auth.handshake": {
     params: AuthHandshakeParams;

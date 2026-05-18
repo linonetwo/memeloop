@@ -1,6 +1,6 @@
 /**
  * Unified node server: one port for HTTP and WebSocket (JSON-RPC 2.0).
- * Used by memeloop-node CLI and TidGi-Desktop (and any host that runs a memeloop node).
+ * Used by memeloop-cli CLI and TidGi-Desktop (and any host that runs a memeloop node).
  * faye-websocket is loaded lazily inside createNodeServer() so that importing this module
  * from a bundle that lacks the package (e.g. the main Electron process) does NOT throw
  * "Cannot find module 'faye-websocket'" at startup.
@@ -96,7 +96,7 @@ export function __setWebSocketImplForTest(impl: WebSocketImpl | null): void {
   testWebSocketImpl = impl;
 }
 
-/** Build git handler from getBackendUrl + verifyAuth (HTTP reverse proxy). Used by memeloop-node. */
+/** Build git handler from getBackendUrl + verifyAuth (HTTP reverse proxy). Used by memeloop-cli. */
 export function createGitProxyHandler(options: {
   getBackendUrl(wikiId: string): Promise<string | null> | null;
   verifyAuth(authHeader: string | undefined): Promise<boolean>;
